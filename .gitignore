@@ -10,8 +10,11 @@ node_modules
 !.env.example
 .webui_secret_key
 config/ark.env
+config/ark.dev.env
 backend/open_webui_data.zip
 backend/open_webui/frontend
+.data-dev/
+.data-prod/
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 # Byte-compiled / optimized / DLL files
