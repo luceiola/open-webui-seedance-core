@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PATCH_SOURCE_DIR="${ROOT_DIR}/.venv/lib/python3.11/site-packages/open_webui/routers"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+PATCH_SOURCE_DIR="${ROOT_DIR}/backend/open_webui/routers"
 
 usage() {
   cat <<'EOF'
@@ -16,8 +16,9 @@ Options:
 
 Notes:
   - Patch source is this repo path:
-      .venv/lib/python3.11/site-packages/open_webui/routers/material_packages.py
-  - This script copies patched router files into the target runtime environment.
+      backend/open_webui/routers/material_packages.py
+  - This script is only for non-editable runtime environments.
+  - If you run `pip install -e .`, you usually do NOT need this script.
 EOF
 }
 

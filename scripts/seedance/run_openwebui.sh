@@ -1,37 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ENV_FILE="${ROOT_DIR}/config/ark.env"
-PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
+HOST="${HOST:-0.0.0.0}"
+PORT="${PORT:-8801}"
 
-if [[ ! -f "${ENV_FILE}" ]]; then
-  echo "[ERROR] Missing env file: ${ENV_FILE}"
+if ! command -v open-webui >/dev/null 2>&1; then
+  echo "[ERROR] open-webui command not found in current env."
+  echo "Activate conda env and run: pip install -e ."
   exit 1
 fi
 
-if [[ ! -x "${PYTHON_BIN}" ]]; then
-  echo "[ERROR] Missing python runtime: ${PYTHON_BIN}"
-  echo "Run: bash scripts/bootstrap.sh"
-  exit 4
-fi
+bash "${ROOT_DIR}/scripts/seedance/preflight.sh" --auto-fix
 
-set -a
-source "${ENV_FILE}"
-set +a
-
-if [[ -z "${ARK_API_KEY:-}" ]]; then
-  echo "[ERROR] ARK_API_KEY is empty in ${ENV_FILE}"
-  exit 2
+if [[ -f "${ENV_FILE}" ]]; then
+  set -a
+  source "${ENV_FILE}"
+  set +a
+  echo "[INFO] loaded env file: ${ENV_FILE}"
+else
+  echo "[WARN] env file not found: ${ENV_FILE} (continue without it)"
 fi
 
 if [[ "${MATERIAL_PACK_TOS_ENABLED:-false}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
-  if ! "${PYTHON_BIN}" -c "import tos" >/dev/null 2>&1; then
+  if ! python -c "import tos" >/dev/null 2>&1; then
     echo "[ERROR] MATERIAL_PACK_TOS_ENABLED=true but python package 'tos' is missing."
-    echo "Run: source .venv/bin/activate && pip install tos"
-    exit 3
+    echo "Run: pip install tos"
+    exit 2
   fi
 fi
 
 cd "${ROOT_DIR}"
-exec "${PYTHON_BIN}" -c "import sys; from open_webui import app; sys.exit(app())" serve --host 127.0.0.1 --port 8080
+exec open-webui serve --host "${HOST}" --port "${PORT}"
