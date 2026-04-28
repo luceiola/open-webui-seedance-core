@@ -53,6 +53,7 @@
 		getWeekday
 	} from '$lib/utils';
 	import { uploadFile } from '$lib/apis/files';
+	import { createMediaAssetsFromUploads } from '$lib/apis/media-assets';
 	import { generateAutoCompletion } from '$lib/apis';
 	import { deleteFileById } from '$lib/apis/files';
 	import { getChatById } from '$lib/apis/chats';
@@ -452,7 +453,9 @@
 	let chatInputElement;
 
 	let filesInputElement;
+	let assetsDirectoryInputElement;
 	let commandsElement;
+	let fileUploadMode: 'default' | 'media-assets' = 'default';
 
 	let inputFiles;
 
@@ -548,6 +551,54 @@
 		});
 	};
 
+	const MEDIA_ASSET_REFERENCE_PREFIX = '%';
+	const MEDIA_ASSET_SUPPORTED_EXTENSIONS = new Set([
+		'jpg',
+		'jpeg',
+		'png',
+		'webp',
+		'bmp',
+		'gif',
+		'mp4',
+		'mov',
+		'mkv',
+		'avi',
+		'webm',
+		'mpeg',
+		'mpg',
+		'm4v',
+		'mp3',
+		'wav',
+		'm4a',
+		'aac',
+		'flac',
+		'ogg'
+	]);
+
+	const isMediaAssetFile = (file: File) => {
+		const mime = (file.type || '').toLowerCase();
+		if (mime.startsWith('image/') || mime.startsWith('video/') || mime.startsWith('audio/')) {
+			return true;
+		}
+
+		const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+		return MEDIA_ASSET_SUPPORTED_EXTENSIONS.has(ext);
+	};
+
+	const normalizeMediaRelativePath = (value: string, fallback: string) => {
+		const raw = (value || '').replace(/\\/g, '/').trim() || fallback;
+		const parts = raw
+			.split('/')
+			.map((part) => part.trim().replace(/\s+/g, '_'))
+			.filter((part) => part.length > 0 && part !== '.' && part !== '..');
+		if (parts.length === 0) return fallback;
+		return parts.join('/');
+	};
+
+	const getMediaAssetReferenceName = (asset) => {
+		return asset?.relative_path || asset?.display_name || asset?.original_filename || '';
+	};
+
 	const screenCaptureHandler = async () => {
 		try {
 			// Request screen media
@@ -633,7 +684,8 @@
 				}
 
 				// During the file upload, file content is automatically extracted.
-				const uploadedFile = await uploadFile(localStorage.token, file, metadata, process);
+				const effectiveProcess = isMediaAssetFile(file) ? false : process;
+				const uploadedFile = await uploadFile(localStorage.token, file, metadata, effectiveProcess);
 
 				if (uploadedFile) {
 					console.log('File upload completed:', {
@@ -692,6 +744,118 @@
 				files = files;
 			}
 		}
+	};
+
+	const uploadMediaAssetsFilesHandler = async (
+		inputFiles,
+		options: {
+			preserveRelativePath?: boolean;
+		} = {}
+	) => {
+		if (!inputFiles || inputFiles.length === 0) {
+			toast.error($i18n.t(`File not found.`));
+			return;
+		}
+
+		const mediaFiles = inputFiles.filter((file) => isMediaAssetFile(file));
+		const unsupportedFiles = inputFiles.filter((file) => !isMediaAssetFile(file));
+
+		if (unsupportedFiles.length > 0) {
+			toast.error($i18n.t('Only image, video, and audio files are supported for assets upload.'));
+		}
+
+		if (mediaFiles.length === 0) {
+			return;
+		}
+
+		const uploadedItems: Array<{
+			upload_id: string;
+			relative_path: string;
+			original_filename: string;
+			mime_type?: string;
+		}> = [];
+		const failedNames: string[] = [];
+
+		for (const file of mediaFiles) {
+			try {
+				const fileRelativePath = options?.preserveRelativePath
+					? normalizeMediaRelativePath(file.webkitRelativePath || file.name, file.name)
+					: normalizeMediaRelativePath(file.name, file.name);
+
+				const metadata = options?.preserveRelativePath
+					? {
+							relative_path: fileRelativePath
+						}
+					: null;
+
+				const uploadedFile = await uploadFile(localStorage.token, file, metadata, false);
+				if (uploadedFile?.id) {
+					uploadedItems.push({
+						upload_id: uploadedFile.id,
+						relative_path: fileRelativePath,
+						original_filename: fileRelativePath,
+						mime_type: file.type || undefined
+					});
+				} else {
+					failedNames.push(file.name);
+				}
+			} catch (e) {
+				console.error('Failed to upload media asset source file:', e);
+				failedNames.push(file.name);
+			}
+		}
+
+		if (uploadedItems.length === 0) {
+			toast.error($i18n.t('Failed to upload assets.'));
+			return;
+		}
+
+		try {
+			const result = await createMediaAssetsFromUploads(localStorage.token, {
+				uploads: uploadedItems
+			});
+
+			const uploadedCount = result?.uploaded?.length ?? 0;
+			const failedCount = (result?.failed?.length ?? 0) + failedNames.length;
+			if (uploadedCount > 0) {
+				toast.success(
+					$i18n.t('Assets uploaded: {{count}}', {
+						count: uploadedCount
+					})
+				);
+			}
+			if (failedCount > 0) {
+				toast.warning(
+					$i18n.t('Some assets failed: {{count}}', {
+						count: failedCount
+					})
+				);
+			}
+
+			if (uploadedCount > 0) {
+				const names = (result?.uploaded ?? [])
+					.map((asset) => getMediaAssetReferenceName(asset))
+					.filter((name) => !!name);
+				const dedupedNames = Array.from(new Set(names));
+				if (dedupedNames.length > 0) {
+					const insertionText =
+						dedupedNames.length === 1
+							? ` ${MEDIA_ASSET_REFERENCE_PREFIX}${dedupedNames[0]} `
+							: `\n${dedupedNames
+									.map((name) => `${MEDIA_ASSET_REFERENCE_PREFIX}${name}`)
+									.join('\n')}\n`;
+					await insertTextAtCursor(insertionText);
+				}
+			}
+		} catch (e) {
+			toast.error(`${e}`);
+		}
+	};
+
+	const insertMediaAssetReference = async (asset) => {
+		const name = getMediaAssetReferenceName(asset);
+		if (!name) return;
+		await insertTextAtCursor(` ${MEDIA_ASSET_REFERENCE_PREFIX}${name} `);
 	};
 
 	const inputFilesHandler = async (inputFiles) => {
@@ -1209,12 +1373,37 @@
 						on:change={async () => {
 							if (inputFiles && inputFiles.length > 0) {
 								const _inputFiles = Array.from(inputFiles);
-								inputFilesHandler(_inputFiles);
+								if (fileUploadMode === 'media-assets') {
+									await uploadMediaAssetsFilesHandler(_inputFiles);
+								} else {
+									inputFilesHandler(_inputFiles);
+								}
 							} else {
 								toast.error($i18n.t(`File not found.`));
 							}
 
+							fileUploadMode = 'default';
 							filesInputElement.value = '';
+						}}
+					/>
+					<input
+						bind:this={assetsDirectoryInputElement}
+						type="file"
+						hidden
+						multiple
+						webkitdirectory
+						directory
+						on:change={async () => {
+							const selectedFiles = Array.from(assetsDirectoryInputElement?.files ?? []);
+							if (selectedFiles.length > 0) {
+								await uploadMediaAssetsFilesHandler(selectedFiles, {
+									preserveRelativePath: true
+								});
+							} else {
+								toast.error($i18n.t(`File not found.`));
+							}
+
+							assetsDirectoryInputElement.value = '';
 						}}
 					/>
 
@@ -1253,8 +1442,9 @@
 						<button
 							id="generate-message-pair-button"
 							class="hidden"
+							aria-label="Generate message pair"
 							on:click={() => createMessagePair(prompt)}
-						/>
+						></button>
 
 						<!-- Task list display -->
 						{#if isActive && chatTasks.length > 0}
@@ -1612,11 +1802,21 @@
 										bind:files
 										selectedModels={atSelectedModel ? [atSelectedModel.id] : selectedModels}
 										{fileUploadCapableModels}
+										showMediaAssetActions={true}
 										{screenCaptureHandler}
 										{inputFilesHandler}
 										uploadFilesHandler={() => {
+											fileUploadMode = 'default';
 											filesInputElement.click();
 										}}
+										uploadAssetsHandler={() => {
+											fileUploadMode = 'media-assets';
+											filesInputElement.click();
+										}}
+										uploadAssetsFolderHandler={() => {
+											assetsDirectoryInputElement.click();
+										}}
+										insertAssetReferenceHandler={insertMediaAssetReference}
 										uploadGoogleDriveHandler={async () => {
 											try {
 												const fileData = await createPicker();
@@ -1671,7 +1871,7 @@
 									{#if showWebSearchButton || showImageGenerationButton || showCodeInterpreterButton || showToolsButton || (toggleFilters && toggleFilters.length > 0)}
 										<div
 											class="flex self-center w-[1px] h-4 mx-1 bg-gray-200/50 dark:bg-gray-800/50"
-										/>
+										></div>
 
 										<IntegrationsMenu
 											selectedModels={atSelectedModel ? [atSelectedModel.id] : selectedModels}
@@ -2107,7 +2307,7 @@
 								{@html DOMPurify.sanitize(marked($config?.license_metadata?.input_footer))}
 							</div>
 						{:else}
-							<div class="mb-1" />
+							<div class="mb-1"></div>
 						{/if}
 					</form>
 				</div>

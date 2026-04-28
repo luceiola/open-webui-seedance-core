@@ -1,6 +1,38 @@
 import { WEBUI_API_BASE_URL } from '$lib/constants';
 import { splitStream } from '$lib/utils';
 
+const MEDIA_UPLOAD_EXTENSIONS = new Set([
+	'jpg',
+	'jpeg',
+	'png',
+	'webp',
+	'bmp',
+	'gif',
+	'mp4',
+	'mov',
+	'mkv',
+	'avi',
+	'webm',
+	'mpeg',
+	'mpg',
+	'm4v',
+	'mp3',
+	'wav',
+	'm4a',
+	'aac',
+	'flac',
+	'ogg'
+]);
+
+const isMediaUploadFile = (file: File): boolean => {
+	const mime = (file.type || '').toLowerCase();
+	if (mime.startsWith('image/') || mime.startsWith('video/') || mime.startsWith('audio/')) {
+		return true;
+	}
+	const ext = (file.name.split('.').pop() || '').toLowerCase();
+	return MEDIA_UPLOAD_EXTENSIONS.has(ext);
+};
+
 export const uploadFile = async (
 	token: string,
 	file: File,
@@ -13,10 +45,9 @@ export const uploadFile = async (
 		data.append('metadata', JSON.stringify(metadata));
 	}
 
+	const resolvedProcess = process ?? !isMediaUploadFile(file);
 	const searchParams = new URLSearchParams();
-	if (process !== undefined && process !== null) {
-		searchParams.append('process', String(process));
-	}
+	searchParams.append('process', String(resolvedProcess));
 
 	let error = null;
 
