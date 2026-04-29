@@ -1,7 +1,7 @@
 """
 title: Seedance Material Package Tool
 author: local-dev
-version: 0.2.0
+version: 0.2.2
 required_open_webui_version: 0.8.0
 requirements: httpx>=0.28.1
 """
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import time
 from typing import Any, Optional
@@ -260,6 +261,20 @@ class Tools:
 
         return None
 
+    def _normalize_video_url(self, value: Any) -> Optional[str]:
+        url = str(value or "").strip()
+        if not url:
+            return None
+        if not url.startswith(("http://", "https://")):
+            return None
+        return url
+
+    def _to_video_url_markdown_or_na(self, value: Any) -> str:
+        url = self._normalize_video_url(value)
+        if not url:
+            return "暂无"
+        return f"[查看视频]({url})"
+
     def _extract_task_error(self, raw_response: Any) -> dict[str, Optional[str]]:
         if not isinstance(raw_response, dict):
             return {"error_code": None, "error_message": None, "request_id": None}
@@ -289,7 +304,94 @@ class Tools:
             "request_id": request_id,
         }
 
+    def _read_env_value_from_file(self, key: str) -> Optional[str]:
+        candidates: list[Path] = []
+        env_path = (os.getenv("ARK_ENV_FILE") or "").strip()
+        if env_path:
+            candidates.append(Path(env_path).expanduser())
+        candidates.extend(
+            [
+                Path.cwd() / "config" / "ark.env",
+                Path.cwd() / "config" / "ark.dev.env",
+                Path.cwd() / ".env",
+            ]
+        )
+
+        for path in candidates:
+            try:
+                if not path.exists() or not path.is_file():
+                    continue
+                for raw_line in path.read_text(encoding="utf-8").splitlines():
+                    line = raw_line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    k, v = line.split("=", 1)
+                    if k.strip() != key:
+                        continue
+                    value = v.strip().strip('"').strip("'")
+                    if value:
+                        return value
+            except Exception:
+                continue
+        return None
+
+    def _get_ark_base_url(self) -> str:
+        base_url = (
+            os.getenv("ARK_BASE_URL")
+            or self._read_env_value_from_file("ARK_BASE_URL")
+            or "https://ark.cn-beijing.volces.com/api/v3"
+        )
+        base = str(base_url).strip().rstrip("/")
+        if "/api/" not in base:
+            base = f"{base}/api/v3"
+        return base
+
+    def _get_ark_api_key(self) -> str:
+        value = (os.getenv("ARK_API_KEY") or self._read_env_value_from_file("ARK_API_KEY") or "").strip()
+        return value
+
+    def _is_seedance_model(self, model: str) -> bool:
+        value = (model or "").strip().lower()
+        return "seedance" in value or "seedance" in value.replace("-", "")
+
+    def _build_seedance_reference_block(self, media_type: str, url: str) -> dict[str, Any]:
+        if media_type == "image":
+            return {
+                "type": "image_url",
+                "image_url": {"url": url},
+                "role": "reference_image",
+            }
+        if media_type == "video":
+            return {
+                "type": "video_url",
+                "video_url": {"url": url},
+                "role": "reference_video",
+            }
+        if media_type == "audio":
+            return {
+                "type": "audio_url",
+                "audio_url": {"url": url},
+                "role": "reference_audio",
+            }
+        raise ValueError(f"Unsupported media type for seedance generation: {media_type}")
+
+    def _extract_media_asset_references(self, prompt: str) -> list[str]:
+        refs = re.findall(r"%([^\s%,，。；;:：!！?？)）\]】}》>\"“”'`]+)", prompt or "")
+        cleaned: list[str] = []
+        for ref in refs:
+            value = ref.strip().rstrip(".,;:!?)\\]}>'\"")
+            if value:
+                cleaned.append(value)
+        return list(dict.fromkeys(cleaned))
+
+    def _clean_prompt_references(self, prompt: str, references: list[str], symbol: str) -> str:
+        cleaned = prompt
+        for ref in references:
+            cleaned = re.sub(rf"{re.escape(symbol)}{re.escape(ref)}", ref, cleaned)
+        return cleaned
+
     def _compact_task_item(self, item: dict[str, Any]) -> dict[str, Any]:
+        video_url = self._normalize_video_url(item.get("video_url"))
         return {
             "task_id": item.get("task_id"),
             "package_id": item.get("package_id"),
@@ -303,7 +405,8 @@ class Tools:
             "ratio": item.get("ratio"),
             "watermark": item.get("watermark"),
             "generate_audio": item.get("generate_audio"),
-            "video_url": item.get("video_url"),
+            "video_url": video_url,
+            "video_url_markdown": self._to_video_url_markdown_or_na(video_url),
             "error_code": item.get("error_code"),
             "error_message": item.get("error_message"),
             "request_id": item.get("request_id"),
@@ -324,6 +427,32 @@ class Tools:
             "references": refs,
             "created_at": item.get("created_at"),
         }
+
+    def _compact_media_asset_item(self, item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "asset_id": item.get("asset_id"),
+            "display_name": item.get("display_name"),
+            "relative_path": item.get("relative_path"),
+            "original_filename": item.get("original_filename"),
+            "media_type": item.get("media_type"),
+            "mime_type": item.get("mime_type"),
+            "size_bytes": item.get("size_bytes"),
+            "status": item.get("status"),
+            "chat_id": item.get("chat_id"),
+            "tos_key": item.get("tos_key"),
+            "tos_status": item.get("tos_status"),
+            "created_at": item.get("created_at"),
+            "updated_at": item.get("updated_at"),
+        }
+
+    def _media_asset_reference_candidates(self, item: dict[str, Any]) -> list[str]:
+        candidates: list[str] = []
+        for key in ("relative_path", "display_name", "original_filename"):
+            value = str(item.get(key) or "").strip()
+            if value:
+                candidates.append(value)
+        # dedupe while preserving order
+        return list(dict.fromkeys(candidates))
 
     def _extract_upload_ids_from_files_context(self, __files__: Any) -> list[str]:
         if not isinstance(__files__, list):
@@ -627,6 +756,201 @@ class Tools:
         result = await self._request("GET", path, __request__)
         return json.dumps(result, ensure_ascii=False)
 
+    async def list_media_assets(
+        self,
+        media_type: str = "",
+        status: str = "active",
+        chat_id: str = "",
+        limit: int = 100,
+        offset: int = 0,
+        __request__: Request = None,
+        __user__: dict = None,
+    ) -> str:
+        """
+        列出当前用户媒体素材（独立素材链路）。
+        """
+        limit = max(1, min(int(limit or 100), 200))
+        offset = max(0, int(offset or 0))
+        query: dict[str, Any] = {"limit": limit, "offset": offset}
+        if (media_type or "").strip():
+            query["media_type"] = media_type.strip()
+        if (status or "").strip():
+            query["status"] = status.strip()
+        if (chat_id or "").strip():
+            query["chat_id"] = chat_id.strip()
+
+        path = f"/api/v1/media-assets/?{urlencode(query)}"
+        result = await self._request("GET", path, __request__)
+        if not result.get("ok"):
+            return json.dumps(result, ensure_ascii=False)
+
+        rows = []
+        for item in result.get("data", []):
+            if isinstance(item, dict):
+                rows.append(self._compact_media_asset_item(item))
+        return json.dumps({"ok": True, "assets": rows, "count": len(rows)}, ensure_ascii=False)
+
+    async def get_media_asset(
+        self,
+        asset_id: str,
+        __request__: Request = None,
+        __user__: dict = None,
+    ) -> str:
+        """
+        查询单个媒体素材详情。
+        """
+        aid = (asset_id or "").strip()
+        if not aid:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "status_code": 400,
+                    "error_code": "InvalidParameter",
+                    "error_message": "asset_id is required",
+                    "request_id": None,
+                },
+                ensure_ascii=False,
+            )
+
+        result = await self._request("GET", f"/api/v1/media-assets/{aid}", __request__)
+        if not result.get("ok"):
+            return json.dumps(result, ensure_ascii=False)
+        row = result.get("data", {}) if isinstance(result.get("data"), dict) else {}
+        return json.dumps({"ok": True, "asset": self._compact_media_asset_item(row)}, ensure_ascii=False)
+
+    async def get_media_asset_url(
+        self,
+        asset_id: str,
+        expires_in: int = 3600,
+        __request__: Request = None,
+        __user__: dict = None,
+    ) -> str:
+        """
+        获取媒体素材临时访问地址（TOS 预签名 URL）。
+        """
+        aid = (asset_id or "").strip()
+        if not aid:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "status_code": 400,
+                    "error_code": "InvalidParameter",
+                    "error_message": "asset_id is required",
+                    "request_id": None,
+                },
+                ensure_ascii=False,
+            )
+        ttl = max(60, min(int(expires_in or 3600), 7 * 24 * 3600))
+        path = f"/api/v1/media-assets/{aid}/url?{urlencode({'expires_in': ttl})}"
+        result = await self._request("GET", path, __request__)
+        return json.dumps(result, ensure_ascii=False)
+
+    async def resolve_media_asset_references(
+        self,
+        prompt: str,
+        chat_id: str = "",
+        status: str = "active",
+        __request__: Request = None,
+        __user__: dict = None,
+    ) -> str:
+        """
+        解析 prompt 中 `%素材路径` 引用，返回命中素材和未命中列表。
+        优先按完整相对路径匹配；若只给了文件名且存在重名，返回冲突提示。
+        """
+        page_size = 200
+        offset = 0
+        assets_raw: list[dict[str, Any]] = []
+
+        while True:
+            query: dict[str, Any] = {"limit": page_size, "offset": offset}
+            if (status or "").strip():
+                query["status"] = status.strip()
+            if (chat_id or "").strip():
+                query["chat_id"] = chat_id.strip()
+            path = f"/api/v1/media-assets/?{urlencode(query)}"
+            result = await self._request("GET", path, __request__)
+            if not result.get("ok"):
+                return json.dumps(result, ensure_ascii=False)
+
+            page_rows = [row for row in (result.get("data") or []) if isinstance(row, dict)]
+            assets_raw.extend(page_rows)
+            if len(page_rows) < page_size:
+                break
+            offset += page_size
+            if offset >= 4000:
+                break
+
+        refs = self._extract_media_asset_references(prompt)
+
+        alias_to_canonical: dict[str, str] = {}
+        canonical_to_item: dict[str, dict[str, Any]] = {}
+        basename_to_canonical: dict[str, list[str]] = {}
+        available_refs: list[str] = []
+        for item in assets_raw:
+            candidates = self._media_asset_reference_candidates(item)
+            if not candidates:
+                continue
+            canonical = candidates[0]
+            if canonical not in canonical_to_item:
+                canonical_to_item[canonical] = item
+                available_refs.append(canonical)
+
+            for ref in candidates:
+                if ref and ref not in alias_to_canonical:
+                    alias_to_canonical[ref] = canonical
+
+            basename = Path(canonical).name
+            if basename:
+                if basename not in basename_to_canonical:
+                    basename_to_canonical[basename] = []
+                if canonical not in basename_to_canonical[basename]:
+                    basename_to_canonical[basename].append(canonical)
+
+        missing: list[str] = []
+        ambiguous: list[dict[str, Any]] = []
+        resolved_assets: list[dict[str, Any]] = []
+        for ref in refs:
+            canonical = alias_to_canonical.get(ref)
+            if not canonical:
+                basename_hits = basename_to_canonical.get(ref) or []
+                if len(basename_hits) == 1:
+                    canonical = basename_hits[0]
+                elif len(basename_hits) > 1:
+                    missing.append(ref)
+                    ambiguous.append(
+                        {
+                            "reference": ref,
+                            "candidates": basename_hits,
+                        }
+                    )
+                    continue
+
+            if not canonical:
+                missing.append(ref)
+                continue
+
+            item = canonical_to_item.get(canonical)
+            if not isinstance(item, dict):
+                missing.append(ref)
+                continue
+            resolved_assets.append(self._compact_media_asset_item(item))
+
+        cleaned_prompt = self._clean_prompt_references(prompt, refs, "%")
+
+        payload = {
+            "ok": True,
+            "status_code": 200,
+            "data": {
+                "references": refs,
+                "missing_references": missing,
+                "ambiguous_references": ambiguous,
+                "available_references": sorted(list(dict.fromkeys(available_refs))),
+                "cleaned_prompt": cleaned_prompt,
+                "assets": resolved_assets,
+            },
+        }
+        return json.dumps(payload, ensure_ascii=False)
+
     async def resolve_material_references(
         self,
         asset_package_id: str,
@@ -770,6 +1094,218 @@ class Tools:
         simplified.update(local_warning)
         return json.dumps(simplified, ensure_ascii=False)
 
+    async def generate_video_with_media_assets(
+        self,
+        prompt: str,
+        model: str = "",
+        instructions: str = "",
+        duration: Optional[int] = None,
+        ratio: str = "",
+        watermark: Optional[bool] = None,
+        generate_audio: Optional[bool] = None,
+        url_expires_in: int = 3600,
+        chat_id: str = "",
+        __request__: Request = None,
+        __user__: dict = None,
+    ) -> str:
+        """
+        使用 `%素材路径` 解析媒体素材并直接提交 Seedance 任务（不依赖素材包）。
+        """
+        model_id = model.strip() or self.valves.DEFAULT_SEEDANCE_MODEL
+        if not self._is_seedance_model(model_id):
+            return json.dumps(
+                {
+                    "ok": False,
+                    "status_code": 400,
+                    "error_code": None,
+                    "error_message": "Only seedance models are supported in media-assets mode.",
+                    "request_id": None,
+                },
+                ensure_ascii=False,
+            )
+
+        resolve_raw = await self.resolve_media_asset_references(
+            prompt=prompt,
+            chat_id=chat_id,
+            __request__=__request__,
+            __user__=__user__,
+        )
+        try:
+            resolve_payload = json.loads(resolve_raw)
+        except Exception:
+            resolve_payload = {
+                "ok": False,
+                "status_code": 500,
+                "error_code": "InvalidToolPayload",
+                "error_message": "Failed to parse media reference resolve payload",
+                "request_id": None,
+            }
+
+        if not resolve_payload.get("ok"):
+            return json.dumps(resolve_payload, ensure_ascii=False)
+
+        resolve_data = resolve_payload.get("data", {}) if isinstance(resolve_payload.get("data"), dict) else {}
+        refs = list(resolve_data.get("references") or [])
+        missing = list(resolve_data.get("missing_references") or [])
+        ambiguous = list(resolve_data.get("ambiguous_references") or [])
+        if missing or ambiguous:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "status_code": 400,
+                    "error_code": "MissingMediaAssetReferences",
+                    "error_message": "Missing referenced media assets",
+                    "request_id": None,
+                    "missing_references": missing,
+                    "ambiguous_references": ambiguous,
+                    "available_references": resolve_data.get("available_references") or [],
+                },
+                ensure_ascii=False,
+            )
+
+        cleaned_prompt = str(resolve_data.get("cleaned_prompt") or prompt)
+        resolved_assets = [item for item in (resolve_data.get("assets") or []) if isinstance(item, dict)]
+
+        seedance_content: list[dict[str, Any]] = [{"type": "text", "text": cleaned_prompt}]
+        unresolved_references: list[dict[str, Any]] = []
+        for asset in resolved_assets:
+            asset_id = str(asset.get("asset_id") or "").strip()
+            media_type = str(asset.get("media_type") or "").strip().lower()
+            ref_name = str(
+                asset.get("relative_path")
+                or asset.get("display_name")
+                or asset.get("original_filename")
+                or asset_id
+            )
+            if not asset_id:
+                unresolved_references.append({"reference": ref_name, "error": "missing asset_id"})
+                continue
+
+            url_raw = await self.get_media_asset_url(
+                asset_id=asset_id,
+                expires_in=url_expires_in,
+                __request__=__request__,
+                __user__=__user__,
+            )
+            try:
+                url_payload = json.loads(url_raw)
+            except Exception:
+                url_payload = {
+                    "ok": False,
+                    "status_code": 500,
+                    "error_code": "InvalidToolPayload",
+                    "error_message": "Failed to parse media asset url payload",
+                    "request_id": None,
+                }
+            if not url_payload.get("ok"):
+                unresolved_references.append(
+                    {
+                        "reference": ref_name,
+                        "asset_id": asset_id,
+                        "error_message": url_payload.get("error_message") or url_payload.get("error"),
+                    }
+                )
+                continue
+
+            url_data = url_payload.get("data", {}) if isinstance(url_payload.get("data"), dict) else {}
+            media_url = url_data.get("url")
+            if not isinstance(media_url, str) or not media_url.startswith(("http://", "https://")):
+                unresolved_references.append(
+                    {
+                        "reference": ref_name,
+                        "asset_id": asset_id,
+                        "error_message": "Invalid media asset url",
+                    }
+                )
+                continue
+
+            try:
+                seedance_content.append(self._build_seedance_reference_block(media_type, media_url))
+            except Exception as e:
+                unresolved_references.append(
+                    {
+                        "reference": ref_name,
+                        "asset_id": asset_id,
+                        "error_message": str(e),
+                    }
+                )
+
+        if unresolved_references:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "status_code": 400,
+                    "error_code": "UnresolvedMediaAssets",
+                    "error_message": "Unable to resolve url for some media assets",
+                    "request_id": None,
+                    "unresolved_references": unresolved_references,
+                },
+                ensure_ascii=False,
+            )
+
+        api_key = self._get_ark_api_key()
+        if not api_key:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "status_code": 400,
+                    "error_code": None,
+                    "error_message": "ARK_API_KEY is not configured",
+                    "request_id": None,
+                },
+                ensure_ascii=False,
+            )
+
+        payload: dict[str, Any] = {"model": model_id, "content": seedance_content}
+        if instructions.strip():
+            payload["instructions"] = instructions.strip()
+        if duration is not None:
+            payload["duration"] = duration
+        if ratio.strip():
+            payload["ratio"] = ratio.strip()
+        if watermark is not None:
+            payload["watermark"] = watermark
+        if generate_audio is not None:
+            payload["generate_audio"] = generate_audio
+
+        base_url = self._get_ark_base_url()
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        async with httpx.AsyncClient(timeout=self.valves.REQUEST_TIMEOUT_SECONDS) as client:
+            resp = await client.post(f"{base_url}/contents/generations/tasks", headers=headers, json=payload)
+
+        if resp.status_code >= 400:
+            return json.dumps(self._normalize_error(resp), ensure_ascii=False)
+
+        try:
+            response_json = resp.json()
+        except Exception:
+            response_json = {"raw_text": resp.text}
+
+        task_id = (
+            response_json.get("task_id")
+            or response_json.get("id")
+            or (response_json.get("data") or {}).get("task_id")
+            or (response_json.get("data") or {}).get("id")
+        )
+        task_status = response_json.get("status") or (response_json.get("data") or {}).get("status") or "submitted"
+
+        if task_id:
+            try:
+                await self.get_generation_task_status(task_id=task_id, __request__=__request__, __user__=__user__)
+            except Exception:
+                pass
+
+        result = {
+            "ok": True,
+            "references": refs,
+            "response_id": task_id,
+            "status": task_status,
+            "output_text": None,
+            "raw_response": response_json,
+            "resolved_assets": resolved_assets,
+        }
+        return json.dumps(result, ensure_ascii=False)
+
     async def list_generation_tasks(
         self,
         package_id: str = "",
@@ -881,11 +1417,13 @@ class Tools:
                 obj = self._to_dict(data)
                 raw = obj.get("raw_response")
                 status = obj.get("status") or self._extract_status_from_raw(raw)
+                video_url = self._normalize_video_url(self._find_first_video_url(raw))
                 payload = {
                     "ok": True,
                     "task_id": obj.get("task_id") or task_id,
                     "status": status,
-                    "video_url": self._find_first_video_url(raw),
+                    "video_url": video_url,
+                    "video_url_markdown": self._to_video_url_markdown_or_na(video_url),
                     "raw_response": raw,
                 }
                 payload.update(local_warning)
@@ -907,11 +1445,13 @@ class Tools:
         data = result.get("data", {})
         raw = data.get("raw_response")
         status = data.get("status") or self._extract_status_from_raw(raw)
+        video_url = self._normalize_video_url(self._find_first_video_url(raw))
         payload = {
             "ok": True,
             "task_id": data.get("task_id") or task_id,
             "status": status,
-            "video_url": self._find_first_video_url(raw),
+            "video_url": video_url,
+            "video_url_markdown": self._to_video_url_markdown_or_na(video_url),
             "raw_response": raw,
         }
         payload.update(local_warning)
@@ -973,6 +1513,7 @@ class Tools:
                     "task_id": payload.get("task_id") or task_id,
                     "status": current_status,
                     "video_url": payload.get("video_url"),
+                    "video_url_markdown": self._to_video_url_markdown_or_na(payload.get("video_url")),
                     "raw_response": raw,
                     "error_code": err.get("error_code") or "GenerationTaskFailed",
                     "error_message": err.get("error_message")
@@ -990,6 +1531,7 @@ class Tools:
                     "task_id": task_id,
                     "status": last_payload.get("status"),
                     "video_url": last_payload.get("video_url"),
+                    "video_url_markdown": self._to_video_url_markdown_or_na(last_payload.get("video_url")),
                     "raw_response": last_payload.get("raw_response"),
                     "error_code": "GenerationTaskPollingTimeout",
                     "error_message": "Generation task polling timeout",
@@ -1093,5 +1635,98 @@ class Tools:
         wait_payload["references"] = submit_payload.get("references", [])
         wait_payload["response_id"] = task_id
         wait_payload["submit_status"] = submit_payload.get("status")
+        wait_payload["raw_submit_response"] = submit_payload.get("raw_response")
+        return json.dumps(wait_payload, ensure_ascii=False)
+
+    async def generate_and_wait_with_media_assets(
+        self,
+        prompt: str,
+        model: str = "",
+        instructions: str = "",
+        duration: Optional[int] = None,
+        ratio: str = "",
+        watermark: Optional[bool] = None,
+        generate_audio: Optional[bool] = None,
+        url_expires_in: int = 3600,
+        chat_id: str = "",
+        timeout_seconds: int = 600,
+        poll_interval_seconds: int = 3,
+        __request__: Request = None,
+        __user__: dict = None,
+    ) -> str:
+        """
+        一步完成：使用 `%素材路径` 提交生成任务并等待终态。
+        """
+        submit_raw = await self.generate_video_with_media_assets(
+            prompt=prompt,
+            model=model,
+            instructions=instructions,
+            duration=duration,
+            ratio=ratio,
+            watermark=watermark,
+            generate_audio=generate_audio,
+            url_expires_in=url_expires_in,
+            chat_id=chat_id,
+            __request__=__request__,
+            __user__=__user__,
+        )
+        try:
+            submit_payload = json.loads(submit_raw)
+        except Exception:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "status_code": 500,
+                    "error_code": "InvalidToolPayload",
+                    "error_message": "Failed to parse media generate response payload",
+                    "request_id": None,
+                },
+                ensure_ascii=False,
+            )
+
+        if not submit_payload.get("ok"):
+            return json.dumps(submit_payload, ensure_ascii=False)
+
+        task_id = (
+            submit_payload.get("response_id")
+            or submit_payload.get("task_id")
+            or (submit_payload.get("raw_response") or {}).get("id")
+        )
+        if not task_id:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "status_code": 502,
+                    "error_code": "MissingTaskId",
+                    "error_message": "Generate call succeeded but task_id(response_id) is missing",
+                    "request_id": None,
+                    "references": submit_payload.get("references", []),
+                    "raw_submit_response": submit_payload.get("raw_response"),
+                },
+                ensure_ascii=False,
+            )
+
+        wait_raw = await self.wait_generation_task(
+            task_id=task_id,
+            timeout_seconds=timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            __request__=__request__,
+            __user__=__user__,
+        )
+        try:
+            wait_payload = json.loads(wait_raw)
+        except Exception:
+            wait_payload = {
+                "ok": False,
+                "status_code": 500,
+                "error_code": "InvalidToolPayload",
+                "error_message": "Failed to parse wait response payload",
+                "request_id": None,
+            }
+
+        wait_payload["references"] = submit_payload.get("references", [])
+        wait_payload["response_id"] = task_id
+        wait_payload["submit_status"] = submit_payload.get("status")
+        wait_payload["resolved_assets"] = submit_payload.get("resolved_assets", [])
         wait_payload["raw_submit_response"] = submit_payload.get("raw_response")
         return json.dumps(wait_payload, ensure_ascii=False)

@@ -16,6 +16,7 @@
 	import ChatBubbleOval from '$lib/components/icons/ChatBubbleOval.svelte';
 	import Refresh from '$lib/components/icons/Refresh.svelte';
 	import Agile from '$lib/components/icons/Agile.svelte';
+	import Photo from '$lib/components/icons/Photo.svelte';
 	import ClockRotateRight from '$lib/components/icons/ClockRotateRight.svelte';
 	import Database from '$lib/components/icons/Database.svelte';
 	import ChevronRight from '$lib/components/icons/ChevronRight.svelte';
@@ -23,6 +24,7 @@
 	import PageEdit from '$lib/components/icons/PageEdit.svelte';
 	import Chats from './InputMenu/Chats.svelte';
 	import Files from './InputMenu/Files.svelte';
+	import MediaAssets from './InputMenu/MediaAssets.svelte';
 	import Notes from './InputMenu/Notes.svelte';
 	import Knowledge from './InputMenu/Knowledge.svelte';
 	import AttachWebpageModal from './AttachWebpageModal.svelte';
@@ -35,15 +37,19 @@
 	export let selectedModels: string[] = [];
 	export let fileUploadCapableModels: string[] = [];
 
-	export let screenCaptureHandler: Function;
-	export let uploadFilesHandler: Function;
-	export let inputFilesHandler: Function;
+	export let screenCaptureHandler: Function = () => {};
+	export let uploadFilesHandler: Function = () => {};
+	export let uploadAssetsHandler: Function = () => {};
+	export let uploadAssetsFolderHandler: Function = () => {};
+	export let inputFilesHandler: Function = () => {};
+	export let insertAssetReferenceHandler: Function = () => {};
+	export let showMediaAssetActions = false;
 
-	export let uploadGoogleDriveHandler: Function;
-	export let uploadOneDriveHandler: Function;
+	export let uploadGoogleDriveHandler: Function = () => {};
+	export let uploadOneDriveHandler: Function = () => {};
 
-	export let onUpload: Function;
-	export let onClose: Function;
+	export let onUpload: Function = () => {};
+	export let onClose: Function = () => {};
 
 	let show = false;
 	let tab = '';
@@ -151,6 +157,58 @@
 							<div class="line-clamp-1">{$i18n.t('Upload Files')}</div>
 						</button>
 					</Tooltip>
+
+					{#if showMediaAssetActions}
+						<Tooltip
+							content={fileUploadCapableModels.length !== selectedModels.length
+								? $i18n.t('Model(s) do not support file upload')
+								: !fileUploadEnabled
+									? $i18n.t('You do not have permission to upload files.')
+									: ''}
+							className="w-full"
+						>
+							<button
+								class="flex w-full gap-2 items-center px-3 py-1.5 text-sm select-none cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50 rounded-xl {!fileUploadEnabled
+									? 'opacity-50'
+									: ''}"
+								type="button"
+								on:click={() => {
+									if (fileUploadEnabled) {
+										uploadAssetsHandler();
+										show = false;
+									}
+								}}
+							>
+								<Agile />
+								<div class="line-clamp-1">{$i18n.t('Upload Assets')}</div>
+							</button>
+						</Tooltip>
+
+						<Tooltip
+							content={fileUploadCapableModels.length !== selectedModels.length
+								? $i18n.t('Model(s) do not support file upload')
+								: !fileUploadEnabled
+									? $i18n.t('You do not have permission to upload files.')
+									: ''}
+							className="w-full"
+						>
+							<button
+								class="flex w-full gap-2 items-center px-3 py-1.5 text-sm select-none cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50 rounded-xl {!fileUploadEnabled
+									? 'opacity-50'
+									: ''}"
+								type="button"
+								on:click={() => {
+									if (fileUploadEnabled) {
+										uploadAssetsFolderHandler();
+										show = false;
+									}
+								}}
+							>
+								<Database />
+								<div class="line-clamp-1">{$i18n.t('Upload Asset Folder')}</div>
+							</button>
+						</Tooltip>
+					{/if}
 
 					<Tooltip
 						content={fileUploadCapableModels.length !== selectedModels.length
@@ -301,6 +359,29 @@
 							</div>
 						</button>
 					</Tooltip>
+
+					{#if showMediaAssetActions}
+						<Tooltip className="w-full">
+							<button
+								class="flex gap-2 w-full items-center px-3 py-1.5 text-sm cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50 rounded-xl"
+								on:click={() => {
+									tab = 'media_assets';
+								}}
+							>
+								<Photo />
+
+								<div class="flex items-center w-full justify-between">
+									<div class=" line-clamp-1">
+										{$i18n.t('Reference Assets')}
+									</div>
+
+									<div class="text-gray-500">
+										<ChevronRight />
+									</div>
+								</div>
+							</button>
+						</Tooltip>
+					{/if}
 
 					<Tooltip
 						content={fileUploadCapableModels.length !== selectedModels.length
@@ -536,6 +617,30 @@
 					</button>
 
 					<Files {onSelect} />
+				</div>
+			{:else if tab === 'media_assets' && showMediaAssetActions}
+				<div in:fly={{ x: 20, duration: 150 }}>
+					<button
+						class="flex w-full justify-between gap-2 items-center px-3 py-1.5 text-sm select-none cursor-pointer rounded-xl hover:bg-gray-50 dark:hover:bg-gray-800/50"
+						on:click={() => {
+							tab = '';
+						}}
+					>
+						<ChevronLeft />
+
+						<div class="flex items-center w-full justify-between">
+							<div>
+								{$i18n.t('Assets')}
+							</div>
+						</div>
+					</button>
+
+					<MediaAssets
+						onSelect={(item) => {
+							insertAssetReferenceHandler(item);
+							show = false;
+						}}
+					/>
 				</div>
 			{:else if tab === 'chats'}
 				<div in:fly={{ x: 20, duration: 150 }}>
