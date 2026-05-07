@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import mimetypes
@@ -7,6 +8,7 @@ import os
 import re
 import inspect
 import shutil
+import subprocess
 import tempfile
 import time
 import uuid
@@ -14,15 +16,17 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from open_webui.config import CACHE_DIR
 from open_webui.models.files import Files
-from open_webui.models.users import UserModel
+from open_webui.models.users import UserModel, Users
 from open_webui.storage.provider import Storage
 from open_webui.utils.auth import get_verified_user
 
@@ -183,10 +187,19 @@ class GenerationTaskStatusResponse(BaseModel):
 
 class GenerationTaskListItem(BaseModel):
     task_id: str
+    user_id: Optional[str] = None
+    user_name: Optional[str] = None
     package_id: Optional[str] = None
     chat_id: Optional[str] = None
     model: Optional[str] = None
     status: Optional[str] = None
+    archive_status: Optional[str] = None
+    archive_error: Optional[str] = None
+    archive_retry_count: Optional[int] = None
+    archive_updated_at: Optional[int] = None
+    download_ready: bool = False
+    can_delete: bool = False
+    deleted_at: Optional[int] = None
     created_at: int
     updated_at: int
     references: list[str] = []
@@ -194,10 +207,29 @@ class GenerationTaskListItem(BaseModel):
     ratio: Optional[str] = None
     watermark: Optional[bool] = None
     generate_audio: Optional[bool] = None
+    thumbnail_url: Optional[str] = None
+    video_preview_url: Optional[str] = None
+    video_download_url: Optional[str] = None
     video_url: Optional[str] = None
     error_code: Optional[str] = None
     error_message: Optional[str] = None
     request_id: Optional[str] = None
+
+
+class GenerationTaskUserItem(BaseModel):
+    user_id: str
+    user_name: str
+
+
+class GenerationTaskPreviewResponse(BaseModel):
+    ok: bool = True
+    task_id: str
+    status: Optional[str] = None
+    archive_status: Optional[str] = None
+    download_ready: bool = False
+    can_delete: bool = False
+    thumbnail_url: Optional[str] = None
+    video_preview_url: Optional[str] = None
 
 
 def _get_int_env(name: str, default: int) -> int:
@@ -304,6 +336,274 @@ TERMINAL_TASK_STATUSES: set[str] = {
     'cancelled',
     'canceled',
 }
+
+ARCHIVE_STATUS_NOT_REQUIRED = 'NOT_REQUIRED'
+ARCHIVE_STATUS_PENDING = 'PENDING'
+ARCHIVE_STATUS_RUNNING = 'RUNNING'
+ARCHIVE_STATUS_SUCCEEDED = 'SUCCEEDED'
+ARCHIVE_STATUS_FAILED = 'FAILED'
+
+TASK_ARCHIVE_FINAL_STATUSES: set[str] = {
+    ARCHIVE_STATUS_SUCCEEDED,
+    ARCHIVE_STATUS_FAILED,
+}
+
+TASK_SOFT_DELETE_RETENTION_DAYS = max(1, _get_int_env('TASK_SOFT_DELETE_RETENTION_DAYS', 7))
+TASK_ARCHIVE_MAX_RETRIES = max(0, _get_int_env('TASK_ARCHIVE_MAX_RETRIES', 3))
+TASK_ARCHIVE_POLL_INTERVAL_SECONDS = max(2, _get_int_env('TASK_ARCHIVE_POLL_INTERVAL_SECONDS', 8))
+TASK_ARCHIVE_POLL_MAX_SECONDS = max(30, _get_int_env('TASK_ARCHIVE_POLL_MAX_SECONDS', 1800))
+
+_LAST_SOFT_DELETE_CLEANUP_AT = 0
+_ACTIVE_ARCHIVE_POLLERS: dict[str, asyncio.Task] = {}
+
+
+def _normalize_task_status(status: Optional[str]) -> Optional[str]:
+    if status is None:
+        return None
+    value = str(status).strip()
+    if not value:
+        return None
+    return value.upper()
+
+
+def _is_succeeded_task_status(status: Optional[str]) -> bool:
+    return str(status or '').strip().lower() in {'succeeded', 'completed', 'success'}
+
+
+def _user_root_dir(user_id: str) -> Path:
+    path = MATERIAL_PACKAGES_DIR / str(user_id)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _task_archives_dir(user_id: str) -> Path:
+    path = _user_root_dir(user_id) / 'task_archives'
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _task_thumbnails_dir(user_id: str) -> Path:
+    path = _user_root_dir(user_id) / 'task_thumbnails'
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _safe_resolve_under(base_dir: Path, relative_path: str) -> Optional[Path]:
+    rel = Path(str(relative_path or '')).as_posix().lstrip('/')
+    if not rel or _is_unsafe_zip_path(rel):
+        return None
+    target = (base_dir / rel).resolve()
+    base_resolved = base_dir.resolve()
+    base_with_sep = f'{base_resolved}{os.sep}'
+    if str(target) != str(base_resolved) and not str(target).startswith(base_with_sep):
+        return None
+    return target
+
+
+def _task_file_from_relative(user_id: str, relative_path: Optional[str]) -> Optional[Path]:
+    if not relative_path:
+        return None
+    base_dir = _user_root_dir(user_id)
+    target = _safe_resolve_under(base_dir, str(relative_path))
+    if not target or not target.is_file():
+        return None
+    return target
+
+
+def _build_task_download_url(task_id: str) -> str:
+    return f'/api/v1/material-packages/tasks/{task_id}/download'
+
+
+def _build_task_preview_url(task_id: str) -> str:
+    return f'/api/v1/material-packages/tasks/{task_id}/video'
+
+
+def _build_task_thumbnail_url(task_id: str) -> str:
+    return f'/api/v1/material-packages/tasks/{task_id}/thumbnail'
+
+
+def _archive_video_relpath(task_id: str, ext: str) -> str:
+    safe_ext = ext if ext.startswith('.') else f'.{ext}'
+    return f'task_archives/{task_id}{safe_ext.lower()}'
+
+
+def _archive_thumb_relpath(task_id: str) -> str:
+    return f'task_thumbnails/{task_id}.jpg'
+
+
+def _guess_video_extension(video_url: Optional[str]) -> str:
+    if not video_url:
+        return '.mp4'
+    try:
+        suffix = Path(urlparse(video_url).path).suffix.lower()
+    except Exception:
+        suffix = ''
+    if suffix in {'.mp4', '.mov', '.mkv', '.webm', '.m4v', '.avi'}:
+        return suffix
+    return '.mp4'
+
+
+def _load_task_record_from_path(path: Path) -> Optional[dict[str, Any]]:
+    try:
+        return json.loads(path.read_text(encoding='utf-8'))
+    except Exception:
+        return None
+
+
+def _iter_task_record_paths() -> list[tuple[str, Path]]:
+    rows: list[tuple[str, Path]] = []
+    if not MATERIAL_PACKAGES_DIR.exists():
+        return rows
+
+    for user_dir in MATERIAL_PACKAGES_DIR.iterdir():
+        if not user_dir.is_dir():
+            continue
+        tasks_dir = user_dir / 'tasks'
+        if not tasks_dir.exists() or not tasks_dir.is_dir():
+            continue
+        for path in tasks_dir.glob('*.json'):
+            rows.append((user_dir.name, path))
+
+    rows.sort(key=lambda row: row[1].stat().st_mtime, reverse=True)
+    return rows
+
+
+def _find_task_record_owner(task_id: str) -> Optional[tuple[str, dict[str, Any], Path]]:
+    safe_task_id = _sanitize_task_id(task_id)
+    for owner_user_id, path in _iter_task_record_paths():
+        if path.stem != safe_task_id:
+            continue
+        data = _load_task_record_from_path(path)
+        if data is None:
+            continue
+        return owner_user_id, data, path
+    return None
+
+
+def _task_delete_allowed(current_user: UserModel, owner_user_id: str) -> bool:
+    return current_user.role == 'admin' or str(current_user.id) == str(owner_user_id)
+
+
+def _sync_task_serving_fields(user_id: str, task_record: dict[str, Any]) -> bool:
+    changed = False
+    task_id = str(task_record.get('task_id') or '').strip()
+    if not task_id:
+        return changed
+
+    video_path = _task_file_from_relative(user_id, task_record.get('archived_video_path'))
+    thumb_path = _task_file_from_relative(user_id, task_record.get('thumbnail_path'))
+
+    archive_status = str(task_record.get('archive_status') or '').strip().upper() or ARCHIVE_STATUS_NOT_REQUIRED
+    download_ready = archive_status == ARCHIVE_STATUS_SUCCEEDED and video_path is not None
+    if task_record.get('download_ready') != download_ready:
+        task_record['download_ready'] = download_ready
+        changed = True
+
+    next_download_url = _build_task_download_url(task_id) if download_ready else None
+    if task_record.get('video_download_url') != next_download_url:
+        task_record['video_download_url'] = next_download_url
+        changed = True
+
+    next_preview_url = _build_task_preview_url(task_id) if download_ready else None
+    if task_record.get('video_preview_url') != next_preview_url:
+        task_record['video_preview_url'] = next_preview_url
+        changed = True
+
+    next_thumb_url = _build_task_thumbnail_url(task_id) if thumb_path else None
+    if task_record.get('thumbnail_url') != next_thumb_url:
+        task_record['thumbnail_url'] = next_thumb_url
+        changed = True
+
+    return changed
+
+
+def _normalize_task_defaults(task_record: dict[str, Any], *, owner_user_id: str) -> bool:
+    changed = False
+
+    task_id = str(task_record.get('task_id') or '').strip()
+    if not task_id:
+        return changed
+
+    if str(task_record.get('user_id') or '') != str(owner_user_id):
+        task_record['user_id'] = str(owner_user_id)
+        changed = True
+
+    status_value = _normalize_task_status(task_record.get('status'))
+    if task_record.get('status') != status_value:
+        task_record['status'] = status_value
+        changed = True
+
+    if _is_succeeded_task_status(status_value):
+        desired_archive = str(task_record.get('archive_status') or '').strip().upper()
+        if not desired_archive:
+            task_record['archive_status'] = ARCHIVE_STATUS_PENDING
+            changed = True
+    else:
+        if str(task_record.get('archive_status') or '').strip().upper() not in TASK_ARCHIVE_FINAL_STATUSES:
+            if task_record.get('archive_status') != ARCHIVE_STATUS_NOT_REQUIRED:
+                task_record['archive_status'] = ARCHIVE_STATUS_NOT_REQUIRED
+                changed = True
+
+    if 'archive_retry_count' not in task_record:
+        task_record['archive_retry_count'] = 0
+        changed = True
+    if 'archive_error' not in task_record:
+        task_record['archive_error'] = None
+        changed = True
+    if 'archive_updated_at' not in task_record:
+        task_record['archive_updated_at'] = int(task_record.get('updated_at') or int(time.time()))
+        changed = True
+    if 'deleted_at' not in task_record:
+        task_record['deleted_at'] = None
+        changed = True
+    if 'deleted_by' not in task_record:
+        task_record['deleted_by'] = None
+        changed = True
+    if 'delete_reason' not in task_record:
+        task_record['delete_reason'] = None
+        changed = True
+
+    if _sync_task_serving_fields(owner_user_id, task_record):
+        changed = True
+
+    return changed
+
+
+def _is_soft_deleted(task_record: dict[str, Any]) -> bool:
+    try:
+        return int(task_record.get('deleted_at') or 0) > 0
+    except Exception:
+        return False
+
+
+def _cleanup_expired_soft_deleted_records() -> None:
+    global _LAST_SOFT_DELETE_CLEANUP_AT
+    now = int(time.time())
+    if now - _LAST_SOFT_DELETE_CLEANUP_AT < 300:
+        return
+    _LAST_SOFT_DELETE_CLEANUP_AT = now
+
+    cutoff = now - TASK_SOFT_DELETE_RETENTION_DAYS * 86400
+    for owner_user_id, path in _iter_task_record_paths():
+        data = _load_task_record_from_path(path)
+        if data is None:
+            continue
+        deleted_at = int(data.get('deleted_at') or 0)
+        if deleted_at <= 0 or deleted_at > cutoff:
+            continue
+
+        for key in ('archived_video_path', 'thumbnail_path'):
+            file_path = _task_file_from_relative(owner_user_id, data.get(key))
+            if file_path and file_path.exists():
+                try:
+                    file_path.unlink()
+                except Exception:
+                    pass
+
+        try:
+            path.unlink()
+        except Exception:
+            pass
 
 
 def _is_terminal_task_status(status: Optional[str]) -> bool:
@@ -438,10 +738,197 @@ def _extract_error_info(payload: Any) -> dict[str, Optional[str]]:
     }
 
 
+async def _download_video_file(video_url: str, dest_path: Path, *, timeout_seconds: int = 300) -> None:
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = dest_path.with_suffix(dest_path.suffix + '.part')
+
+    async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=True) as client:
+        async with client.stream('GET', video_url) as resp:
+            if resp.status_code >= 400:
+                raise RuntimeError(f'Video download failed: HTTP {resp.status_code}')
+            with temp_path.open('wb') as f:
+                async for chunk in resp.aiter_bytes(chunk_size=1024 * 1024):
+                    if chunk:
+                        f.write(chunk)
+
+    if not temp_path.exists() or temp_path.stat().st_size <= 0:
+        raise RuntimeError('Downloaded video file is empty')
+    temp_path.replace(dest_path)
+
+
+def _generate_video_thumbnail(video_path: Path, thumbnail_path: Path) -> bool:
+    ffmpeg = shutil.which('ffmpeg')
+    if not ffmpeg:
+        return False
+
+    thumbnail_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        subprocess.run(
+            [
+                ffmpeg,
+                '-y',
+                '-ss',
+                '00:00:01.000',
+                '-i',
+                str(video_path),
+                '-vframes',
+                '1',
+                '-vf',
+                'scale=540:-1:force_original_aspect_ratio=decrease',
+                str(thumbnail_path),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except Exception:
+        return False
+    return thumbnail_path.exists() and thumbnail_path.stat().st_size > 0
+
+
+async def _archive_task_record_if_needed(
+    owner_user_id: str,
+    task_record: dict[str, Any],
+    *,
+    force_retry: bool = False,
+) -> dict[str, Any]:
+    task_id = str(task_record.get('task_id') or '').strip()
+    if not task_id:
+        return task_record
+
+    now = int(time.time())
+    changed = False
+    status_value = _normalize_task_status(task_record.get('status'))
+    if task_record.get('status') != status_value:
+        task_record['status'] = status_value
+        changed = True
+
+    if not _is_succeeded_task_status(status_value):
+        if str(task_record.get('archive_status') or '').strip().upper() not in TASK_ARCHIVE_FINAL_STATUSES:
+            if task_record.get('archive_status') != ARCHIVE_STATUS_NOT_REQUIRED:
+                task_record['archive_status'] = ARCHIVE_STATUS_NOT_REQUIRED
+                changed = True
+        if _sync_task_serving_fields(owner_user_id, task_record):
+            changed = True
+        if changed:
+            task_record['archive_updated_at'] = now
+            _save_task_record(owner_user_id, task_id, task_record)
+        return task_record
+
+    archive_status = str(task_record.get('archive_status') or '').strip().upper() or ARCHIVE_STATUS_PENDING
+    if archive_status == ARCHIVE_STATUS_SUCCEEDED and _sync_task_serving_fields(owner_user_id, task_record):
+        _save_task_record(owner_user_id, task_id, task_record)
+        return task_record
+
+    retry_count = int(task_record.get('archive_retry_count') or 0)
+    if archive_status == ARCHIVE_STATUS_FAILED and retry_count >= TASK_ARCHIVE_MAX_RETRIES and not force_retry:
+        return task_record
+
+    video_url = str(task_record.get('video_url') or '').strip()
+    if not video_url:
+        video_url = _find_first_video_url(task_record.get('raw_last_response') or {}) or ''
+        if video_url:
+            task_record['video_url'] = video_url
+            changed = True
+
+    if not video_url:
+        task_record['archive_status'] = ARCHIVE_STATUS_FAILED
+        task_record['archive_error'] = 'No video_url found in task response'
+        task_record['archive_retry_count'] = retry_count + 1
+        task_record['archive_updated_at'] = now
+        _sync_task_serving_fields(owner_user_id, task_record)
+        _save_task_record(owner_user_id, task_id, task_record)
+        return task_record
+
+    task_record['archive_status'] = ARCHIVE_STATUS_RUNNING
+    task_record['archive_error'] = None
+    task_record['archive_updated_at'] = now
+    task_record['archive_retry_count'] = retry_count + 1
+    _save_task_record(owner_user_id, task_id, task_record)
+
+    ext = _guess_video_extension(video_url)
+    video_relpath = _archive_video_relpath(task_id, ext)
+    video_path = _safe_resolve_under(_user_root_dir(owner_user_id), video_relpath)
+    if not video_path:
+        task_record['archive_status'] = ARCHIVE_STATUS_FAILED
+        task_record['archive_error'] = 'Invalid archive path'
+        task_record['archive_updated_at'] = int(time.time())
+        _save_task_record(owner_user_id, task_id, task_record)
+        return task_record
+
+    try:
+        await _download_video_file(video_url, video_path)
+    except Exception as e:
+        task_record['archive_status'] = ARCHIVE_STATUS_FAILED
+        task_record['archive_error'] = str(e)
+        task_record['archive_updated_at'] = int(time.time())
+        _sync_task_serving_fields(owner_user_id, task_record)
+        _save_task_record(owner_user_id, task_id, task_record)
+        return task_record
+
+    task_record['archived_video_path'] = video_relpath
+    task_record['archive_status'] = ARCHIVE_STATUS_SUCCEEDED
+    task_record['archive_error'] = None
+    task_record['archive_updated_at'] = int(time.time())
+
+    thumb_relpath = _archive_thumb_relpath(task_id)
+    thumb_path = _safe_resolve_under(_user_root_dir(owner_user_id), thumb_relpath)
+    if thumb_path and _generate_video_thumbnail(video_path, thumb_path):
+        task_record['thumbnail_path'] = thumb_relpath
+
+    _sync_task_serving_fields(owner_user_id, task_record)
+    _save_task_record(owner_user_id, task_id, task_record)
+    return task_record
+
+
+def _archive_poller_key(owner_user_id: str, task_id: str) -> str:
+    return f'{owner_user_id}:{task_id}'
+
+
+def _spawn_task_archive_poller(owner_user_id: str, task_id: str) -> None:
+    key = _archive_poller_key(owner_user_id, task_id)
+    existing = _ACTIVE_ARCHIVE_POLLERS.get(key)
+    if existing and not existing.done():
+        return
+
+    async def _runner() -> None:
+        started_at = int(time.time())
+        while int(time.time()) - started_at <= TASK_ARCHIVE_POLL_MAX_SECONDS:
+            record = _load_task_record(owner_user_id, task_id)
+            if not record:
+                return
+
+            if _is_soft_deleted(record):
+                return
+
+            if _should_refresh_task_status(record, TASK_ARCHIVE_POLL_INTERVAL_SECONDS):
+                record = await _refresh_task_record_from_ark(owner_user_id, record, timeout_seconds=120)
+
+            record = await _archive_task_record_if_needed(owner_user_id, record)
+
+            status_value = _normalize_task_status(record.get('status'))
+            archive_status = str(record.get('archive_status') or '').strip().upper()
+            if _is_terminal_task_status(status_value) and (
+                not _is_succeeded_task_status(status_value) or archive_status in TASK_ARCHIVE_FINAL_STATUSES
+            ):
+                return
+
+            await asyncio.sleep(TASK_ARCHIVE_POLL_INTERVAL_SECONDS)
+
+    task = asyncio.create_task(_runner(), name=f'task-archive-poller:{key}')
+    _ACTIVE_ARCHIVE_POLLERS[key] = task
+
+    def _cleanup(_task: asyncio.Task) -> None:
+        _ACTIVE_ARCHIVE_POLLERS.pop(key, None)
+
+    task.add_done_callback(_cleanup)
+
+
 def _touch_task_record(
     user_id: str,
     task_id: str,
     *,
+    user_name: Optional[str] = None,
     package_id: Optional[str] = None,
     chat_id: Optional[str] = None,
     model: Optional[str] = None,
@@ -467,6 +954,8 @@ def _touch_task_record(
         current['package_id'] = package_id
     if chat_id is not None:
         current['chat_id'] = chat_id
+    if user_name is not None:
+        current['user_name'] = user_name
     if model is not None:
         current['model'] = model
     if references is not None:
@@ -480,14 +969,14 @@ def _touch_task_record(
     if generate_audio is not None:
         current['generate_audio'] = generate_audio
     if status is not None:
-        current['status'] = status
+        current['status'] = _normalize_task_status(status)
     if raw_submit_response is not None:
         current['raw_submit_response'] = raw_submit_response
     if raw_last_response is not None:
         current['raw_last_response'] = raw_last_response
         parsed_status = _extract_task_status(raw_last_response)
         if parsed_status:
-            current['status'] = parsed_status
+            current['status'] = _normalize_task_status(parsed_status)
 
         video_url = _find_first_video_url(raw_last_response)
         if video_url:
@@ -501,6 +990,9 @@ def _touch_task_record(
         if err.get('request_id'):
             current['request_id'] = err.get('request_id')
 
+    if _normalize_task_defaults(current, owner_user_id=str(user_id)):
+        current['updated_at'] = now
+    _sync_task_serving_fields(str(user_id), current)
     current['updated_at'] = now
     _save_task_record(user_id, task_id, current)
     return current
@@ -1163,6 +1655,93 @@ def _to_response_model(manifest: dict[str, Any]) -> MaterialPackageResponse:
     )
 
 
+async def _resolve_user_name(user_id: str, cache: dict[str, str]) -> str:
+    if user_id in cache:
+        return cache[user_id]
+    user = await Users.get_user_by_id(user_id)
+    if user:
+        value = str(user.name or user.username or user.id)
+    else:
+        value = str(user_id)
+    cache[user_id] = value
+    return value
+
+
+def _to_generation_task_list_item(
+    *,
+    owner_user_id: str,
+    owner_user_name: str,
+    item: dict[str, Any],
+    requester: UserModel,
+) -> GenerationTaskListItem:
+    task_id = str(item.get('task_id') or '')
+    can_delete = _task_delete_allowed(requester, owner_user_id)
+    archive_status = str(item.get('archive_status') or ARCHIVE_STATUS_NOT_REQUIRED).upper()
+    download_ready = bool(item.get('download_ready'))
+
+    return GenerationTaskListItem(
+        task_id=task_id,
+        user_id=owner_user_id,
+        user_name=owner_user_name,
+        package_id=item.get('package_id'),
+        chat_id=item.get('chat_id'),
+        model=item.get('model'),
+        status=item.get('status'),
+        archive_status=archive_status,
+        archive_error=item.get('archive_error'),
+        archive_retry_count=int(item.get('archive_retry_count') or 0),
+        archive_updated_at=int(item.get('archive_updated_at') or 0),
+        download_ready=download_ready,
+        can_delete=can_delete,
+        deleted_at=int(item.get('deleted_at') or 0) or None,
+        created_at=int(item.get('created_at') or 0),
+        updated_at=int(item.get('updated_at') or 0),
+        references=item.get('references') or [],
+        duration=item.get('duration'),
+        ratio=item.get('ratio'),
+        watermark=item.get('watermark'),
+        generate_audio=item.get('generate_audio'),
+        thumbnail_url=item.get('thumbnail_url'),
+        video_preview_url=item.get('video_preview_url'),
+        video_download_url=item.get('video_download_url'),
+        video_url=item.get('video_url'),
+        error_code=item.get('error_code'),
+        error_message=item.get('error_message'),
+        request_id=item.get('request_id'),
+    )
+
+
+async def _load_task_for_read(
+    task_id: str,
+    *,
+    include_deleted: bool = False,
+    refresh_status: bool = False,
+    refresh_min_interval_seconds: int = 5,
+) -> tuple[str, dict[str, Any]]:
+    found = _find_task_record_owner(task_id)
+    if not found:
+        raise HTTPException(status_code=404, detail='Task not found')
+
+    owner_user_id, item, _path = found
+    changed = _normalize_task_defaults(item, owner_user_id=owner_user_id)
+
+    if refresh_status and _should_refresh_task_status(item, refresh_min_interval_seconds):
+        item = await _refresh_task_record_from_ark(owner_user_id, item, timeout_seconds=120)
+        changed = True
+
+    item = await _archive_task_record_if_needed(owner_user_id, item)
+    if _normalize_task_defaults(item, owner_user_id=owner_user_id):
+        changed = True
+
+    if _is_soft_deleted(item) and not include_deleted:
+        raise HTTPException(status_code=404, detail='Task not found')
+
+    if changed:
+        _save_task_record(owner_user_id, str(item.get('task_id') or task_id), item)
+
+    return owner_user_id, item
+
+
 @router.post('/', response_model=MaterialPackageResponse)
 async def upload_material_package(
     zip_file: UploadFile = File(...),
@@ -1376,58 +1955,76 @@ async def get_material_package_assets(
 
 @router.get('/tasks', response_model=list[GenerationTaskListItem])
 async def list_generation_tasks(
+    user_id: Optional[str] = Query(default=None),
     package_id: Optional[str] = Query(default=None),
     task_status: Optional[str] = Query(default=None, alias='status'),
+    model: Optional[str] = Query(default=None),
     chat_id: Optional[str] = Query(default=None),
+    include_deleted: bool = Query(default=False),
     refresh_status: bool = Query(default=True),
     refresh_min_interval_seconds: int = Query(default=5, ge=0, le=600),
+    offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
     user: UserModel = Depends(get_verified_user),
 ):
-    tasks_dir = _tasks_dir(user.id)
-    if not tasks_dir.exists():
-        return []
+    _cleanup_expired_soft_deleted_records()
 
+    desired_user = (user_id or '').strip() if user_id else None
     desired_status = (task_status or '').strip().lower() if task_status else None
     desired_package = (package_id or '').strip() if package_id else None
+    desired_model = (model or '').strip().lower() if model else None
     desired_chat = (chat_id or '').strip() if chat_id else None
 
+    skipped = 0
+    user_name_cache: dict[str, str] = {}
     rows: list[GenerationTaskListItem] = []
-    for path in sorted(tasks_dir.glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True):
-        try:
-            item = json.loads(path.read_text(encoding='utf-8'))
-        except Exception:
+    for owner_user_id, path in _iter_task_record_paths():
+        if desired_user and str(owner_user_id) != desired_user:
+            continue
+        item = _load_task_record_from_path(path)
+        if item is None:
             continue
 
-        if desired_package and item.get('package_id') != desired_package:
+        changed = _normalize_task_defaults(item, owner_user_id=owner_user_id)
+
+        if refresh_status and _should_refresh_task_status(item, refresh_min_interval_seconds):
+            item = await _refresh_task_record_from_ark(owner_user_id, item, timeout_seconds=120)
+            changed = True
+
+        item = await _archive_task_record_if_needed(owner_user_id, item)
+        if _normalize_task_defaults(item, owner_user_id=owner_user_id):
+            changed = True
+
+        if changed:
+            _save_task_record(owner_user_id, str(item.get('task_id') or path.stem), item)
+
+        if not include_deleted and _is_soft_deleted(item):
+            continue
+        if desired_package and str(item.get('package_id') or '') != desired_package:
+            continue
+        if desired_model and str(item.get('model') or '').strip().lower() != desired_model:
             continue
         if desired_chat and item.get('chat_id') != desired_chat:
             continue
-
-        if refresh_status and _should_refresh_task_status(item, refresh_min_interval_seconds):
-            item = await _refresh_task_record_from_ark(str(user.id), item)
-
         if desired_status and str(item.get('status') or '').strip().lower() != desired_status:
             continue
 
+        if skipped < offset:
+            skipped += 1
+            continue
+
+        owner_user_name = str(item.get('user_name') or '').strip()
+        if not owner_user_name:
+            owner_user_name = await _resolve_user_name(owner_user_id, user_name_cache)
+            item['user_name'] = owner_user_name
+            _save_task_record(owner_user_id, str(item.get('task_id') or path.stem), item)
+
         rows.append(
-            GenerationTaskListItem(
-                task_id=str(item.get('task_id') or ''),
-                package_id=item.get('package_id'),
-                chat_id=item.get('chat_id'),
-                model=item.get('model'),
-                status=item.get('status'),
-                created_at=int(item.get('created_at') or 0),
-                updated_at=int(item.get('updated_at') or 0),
-                references=item.get('references') or [],
-                duration=item.get('duration'),
-                ratio=item.get('ratio'),
-                watermark=item.get('watermark'),
-                generate_audio=item.get('generate_audio'),
-                video_url=item.get('video_url'),
-                error_code=item.get('error_code'),
-                error_message=item.get('error_message'),
-                request_id=item.get('request_id'),
+            _to_generation_task_list_item(
+                owner_user_id=owner_user_id,
+                owner_user_name=owner_user_name,
+                item=item,
+                requester=user,
             )
         )
 
@@ -1435,6 +2032,146 @@ async def list_generation_tasks(
             break
 
     return rows
+
+
+@router.get('/tasks/users', response_model=list[GenerationTaskUserItem])
+async def list_generation_task_users(
+    include_deleted: bool = Query(default=False),
+    user: UserModel = Depends(get_verified_user),
+):
+    _ = user
+    _cleanup_expired_soft_deleted_records()
+
+    user_name_cache: dict[str, str] = {}
+    seen: set[str] = set()
+    rows: list[GenerationTaskUserItem] = []
+    for owner_user_id, path in _iter_task_record_paths():
+        if owner_user_id in seen:
+            continue
+        item = _load_task_record_from_path(path)
+        if item is None:
+            continue
+        if not include_deleted and _is_soft_deleted(item):
+            continue
+
+        user_name = str(item.get('user_name') or '').strip()
+        if not user_name:
+            user_name = await _resolve_user_name(owner_user_id, user_name_cache)
+
+        rows.append(GenerationTaskUserItem(user_id=owner_user_id, user_name=user_name))
+        seen.add(owner_user_id)
+
+    rows.sort(key=lambda row: row.user_name.lower())
+    return rows
+
+
+@router.get('/tasks/{task_id}/preview', response_model=GenerationTaskPreviewResponse)
+async def get_generation_task_preview(
+    task_id: str,
+    refresh_status: bool = Query(default=True),
+    user: UserModel = Depends(get_verified_user),
+):
+    owner_user_id, item = await _load_task_for_read(
+        task_id,
+        refresh_status=refresh_status,
+        refresh_min_interval_seconds=5,
+    )
+    return GenerationTaskPreviewResponse(
+        task_id=str(item.get('task_id') or task_id),
+        status=item.get('status'),
+        archive_status=item.get('archive_status'),
+        download_ready=bool(item.get('download_ready')),
+        can_delete=_task_delete_allowed(user, owner_user_id),
+        thumbnail_url=item.get('thumbnail_url'),
+        video_preview_url=item.get('video_preview_url'),
+    )
+
+
+@router.get('/tasks/{task_id}/video')
+async def stream_generation_task_video(task_id: str, user: UserModel = Depends(get_verified_user)):
+    _ = user
+    owner_user_id, item = await _load_task_for_read(task_id, refresh_status=False)
+    if not item.get('download_ready'):
+        raise HTTPException(status_code=409, detail='ArchiveNotReady')
+
+    video_path = _task_file_from_relative(owner_user_id, item.get('archived_video_path'))
+    if not video_path:
+        raise HTTPException(status_code=404, detail='Archived video not found')
+
+    media_type = mimetypes.guess_type(video_path.name)[0] or 'video/mp4'
+    return FileResponse(path=video_path, media_type=media_type, filename=video_path.name)
+
+
+@router.get('/tasks/{task_id}/thumbnail')
+async def get_generation_task_thumbnail(task_id: str, user: UserModel = Depends(get_verified_user)):
+    _ = user
+    owner_user_id, item = await _load_task_for_read(task_id, refresh_status=False)
+    thumbnail_path = _task_file_from_relative(owner_user_id, item.get('thumbnail_path'))
+    if not thumbnail_path:
+        raise HTTPException(status_code=404, detail='Thumbnail not found')
+    media_type = mimetypes.guess_type(thumbnail_path.name)[0] or 'image/jpeg'
+    return FileResponse(path=thumbnail_path, media_type=media_type, filename=thumbnail_path.name)
+
+
+@router.get('/tasks/{task_id}/download')
+async def download_generation_task(task_id: str, user: UserModel = Depends(get_verified_user)):
+    _ = user
+    owner_user_id, item = await _load_task_for_read(task_id, refresh_status=False)
+    if not item.get('download_ready'):
+        raise HTTPException(status_code=409, detail='ArchiveNotReady')
+
+    video_path = _task_file_from_relative(owner_user_id, item.get('archived_video_path'))
+    if not video_path:
+        raise HTTPException(status_code=404, detail='Archived video not found')
+
+    media_type = mimetypes.guess_type(video_path.name)[0] or 'video/mp4'
+    return FileResponse(path=video_path, media_type=media_type, filename=video_path.name)
+
+
+@router.post('/tasks/{task_id}/archive/retry')
+async def retry_generation_task_archive(task_id: str, user: UserModel = Depends(get_verified_user)):
+    owner_user_id, item = await _load_task_for_read(task_id, refresh_status=True)
+    if not _task_delete_allowed(user, owner_user_id):
+        raise HTTPException(status_code=403, detail='No permission to retry archive')
+
+    item['archive_status'] = ARCHIVE_STATUS_PENDING
+    item['archive_error'] = None
+    item['archive_updated_at'] = int(time.time())
+    _save_task_record(owner_user_id, str(item.get('task_id') or task_id), item)
+    item = await _archive_task_record_if_needed(owner_user_id, item, force_retry=True)
+    return {
+        'ok': True,
+        'task_id': str(item.get('task_id') or task_id),
+        'archive_status': item.get('archive_status'),
+    }
+
+
+@router.delete('/tasks/{task_id}')
+async def soft_delete_generation_task(
+    task_id: str,
+    delete_reason: Optional[str] = Query(default=None),
+    user: UserModel = Depends(get_verified_user),
+):
+    owner_user_id, item = await _load_task_for_read(
+        task_id,
+        include_deleted=True,
+        refresh_status=False,
+    )
+    if not _task_delete_allowed(user, owner_user_id):
+        raise HTTPException(status_code=403, detail='No permission to delete this task')
+
+    now = int(time.time())
+    item['deleted_at'] = now
+    item['deleted_by'] = str(user.id)
+    item['delete_reason'] = (delete_reason or '').strip() or None
+    item['updated_at'] = now
+    _save_task_record(owner_user_id, str(item.get('task_id') or task_id), item)
+
+    return {
+        'ok': True,
+        'task_id': str(item.get('task_id') or task_id),
+        'deleted_at': now,
+    }
 
 
 @router.get('/{package_id}', response_model=MaterialPackageResponse)
@@ -1595,6 +2332,7 @@ async def generate_with_material_package(
             _touch_task_record(
                 str(user.id),
                 str(task_id),
+                user_name=str(user.name or user.username or user.id),
                 package_id=package_id,
                 chat_id=manifest.get('chat_id'),
                 model=form_data.model,
@@ -1607,6 +2345,7 @@ async def generate_with_material_package(
                 raw_submit_response=response_json,
                 raw_last_response=response_json,
             )
+            _spawn_task_archive_poller(str(user.id), str(task_id))
 
         return GenerateWithPackageResponse(
             package_id=package_id,
@@ -1624,17 +2363,24 @@ async def generate_with_material_package(
 
 
 @router.get('/tasks/{task_id}', response_model=GenerationTaskStatusResponse)
-async def get_generation_task_status(task_id: str, user: UserModel = Depends(get_verified_user)):
-    safe_task_id = _sanitize_task_id(task_id)
-    data = await _query_generation_task_from_ark(safe_task_id, timeout_seconds=120)
-    refreshed = _touch_task_record(
-        str(user.id),
-        safe_task_id,
-        status=_extract_task_status(data),
-        raw_last_response=data,
+async def get_generation_task_status(
+    task_id: str,
+    refresh_status: bool = Query(default=True),
+    refresh_min_interval_seconds: int = Query(default=5, ge=0, le=600),
+    user: UserModel = Depends(get_verified_user),
+):
+    _ = user
+    owner_user_id, item = await _load_task_for_read(
+        task_id,
+        refresh_status=refresh_status,
+        refresh_min_interval_seconds=refresh_min_interval_seconds,
     )
+
+    safe_task_id = _sanitize_task_id(str(item.get('task_id') or task_id))
+    _spawn_task_archive_poller(owner_user_id, safe_task_id)
+
     return GenerationTaskStatusResponse(
         task_id=safe_task_id,
-        status=refreshed.get('status'),
-        raw_response=data,
+        status=item.get('status'),
+        raw_response=item.get('raw_last_response') or {},
     )
