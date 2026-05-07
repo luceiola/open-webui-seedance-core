@@ -1,0 +1,18 @@
+[Unit]
+Description=OpenWebUI Seedance Prod (8801)
+After=network.target
+
+[Service]
+Type=simple
+User=CHANGE_ME
+WorkingDirectory=/ABS/PATH/TO/open-webui-seedance-prod
+EnvironmentFile=/ABS/PATH/TO/open-webui-seedance-prod/config/ark.env
+Environment=HOST=0.0.0.0
+Environment=PORT=8801
+Environment=DATA_DIR=/ABS/PATH/TO/open-webui-seedance-prod/.data-prod
+ExecStart=/bin/bash /ABS/PATH/TO/open-webui-seedance-prod/scripts/seedance/run_openwebui.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
