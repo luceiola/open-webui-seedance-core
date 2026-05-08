@@ -49,6 +49,7 @@
 
 	const toAssetUrl = (value?: string | null) => {
 		if (!value) return '';
+		if (value.startsWith('/api/')) return value;
 		return value.startsWith('/') ? `${WEBUI_API_BASE_URL}${value}` : value;
 	};
 

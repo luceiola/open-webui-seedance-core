@@ -597,6 +597,13 @@ def _sync_task_serving_fields(user_id: str, task_record: dict[str, Any]) -> bool
     thumb_path = _task_file_from_relative(user_id, task_record.get('thumbnail_path'))
 
     archive_status = str(task_record.get('archive_status') or '').strip().upper() or ARCHIVE_STATUS_NOT_REQUIRED
+    if video_path is not None and archive_status != ARCHIVE_STATUS_SUCCEEDED:
+        # Self-heal legacy/inconsistent records: if archived file exists, treat archive as succeeded.
+        task_record['archive_status'] = ARCHIVE_STATUS_SUCCEEDED
+        task_record['archive_error'] = None
+        archive_status = ARCHIVE_STATUS_SUCCEEDED
+        changed = True
+
     download_ready = archive_status == ARCHIVE_STATUS_SUCCEEDED and video_path is not None
     if task_record.get('download_ready') != download_ready:
         task_record['download_ready'] = download_ready
