@@ -58,6 +58,9 @@
 		return normalized || 'UNKNOWN';
 	};
 
+	const taskRowKey = (task: GenerationTaskItem) =>
+		`${String(task.user_id || '')}::${String(task.task_id || '')}`;
+
 	const resetAndLoadTasks = async () => {
 		offset = 0;
 		hasMore = true;
@@ -144,7 +147,11 @@
 
 		const fresh = await refreshPreviewTask(task);
 		selectedTask = fresh;
-		tasks = tasks.map((item) => (item.task_id === fresh.task_id ? fresh : item));
+		tasks = tasks.map((item) =>
+			item.task_id === fresh.task_id && String(item.user_id || '') === String(task.user_id || '')
+				? fresh
+				: item
+		);
 	};
 
 	const handleDownload = async (task: GenerationTaskItem) => {
@@ -331,7 +338,7 @@
 			<div class="h-full flex items-center justify-center text-sm text-gray-500">暂无任务</div>
 		{:else}
 			<div class="task-grid">
-				{#each tasks as task (task.task_id)}
+				{#each tasks as task (taskRowKey(task))}
 					<div class="task-cell">
 						<div
 							class="task-preview"
