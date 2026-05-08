@@ -8,6 +8,7 @@
 		deleteGenerationTask,
 		downloadGenerationTask,
 		getGenerationTaskPreview,
+		listGenerationTaskProviders,
 		listGenerationTaskUsers,
 		listGenerationTasks,
 		type GenerationTaskItem,
@@ -32,8 +33,10 @@
 
 	let tasks: GenerationTaskItem[] = [];
 	let taskUsers: GenerationTaskUserItem[] = [];
+	let providerOptions: string[] = [];
 
 	let selectedUserId = '';
+	let selectedProvider = '';
 	let selectedStatus = '';
 	let selectedModel = '';
 	let includeDeleted = false;
@@ -42,6 +45,7 @@
 	let selectedTask: GenerationTaskItem | null = null;
 
 	const STATUS_OPTIONS = ['', 'PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELED', 'UNKNOWN'];
+	const FALLBACK_PROVIDER_OPTIONS = ['', 'ark', 'happyhorse'];
 
 	const toAssetUrl = (value?: string | null) => {
 		if (!value) return '';
@@ -67,6 +71,23 @@
 		});
 	};
 
+	const loadTaskProviders = async () => {
+		const rows = await listGenerationTaskProviders(localStorage.token, selectedUserId || undefined).catch(
+			(error) => {
+				console.error(error);
+				return [];
+			}
+		);
+		const uniq = Array.from(new Set(rows.map((item) => String(item).trim().toLowerCase()).filter(Boolean)));
+		providerOptions = ['', ...uniq];
+		if (providerOptions.length <= 1) {
+			providerOptions = [...FALLBACK_PROVIDER_OPTIONS];
+		}
+		if (selectedProvider && !providerOptions.includes(selectedProvider)) {
+			selectedProvider = '';
+		}
+	};
+
 	const loadTasks = async ({ reset = false }: { reset?: boolean } = {}) => {
 		if (reset) {
 			loading = true;
@@ -78,6 +99,7 @@
 		try {
 			const rows = await listGenerationTasks(localStorage.token, {
 				user_id: selectedUserId || undefined,
+				provider: selectedProvider || undefined,
 				status: selectedStatus || undefined,
 				model: selectedModel.trim() || undefined,
 				include_deleted: includeDeleted,
@@ -167,6 +189,7 @@
 
 	onMount(async () => {
 		await loadTaskUsers();
+		await loadTaskProviders();
 		await resetAndLoadTasks();
 	});
 </script>
@@ -250,6 +273,12 @@
 					{/each}
 				</select>
 
+				<select class="task-select" bind:value={selectedProvider}>
+					{#each providerOptions as provider}
+						<option value={provider}>{provider ? provider.toUpperCase() : '全部来源'}</option>
+					{/each}
+				</select>
+
 				<select class="task-select" bind:value={selectedStatus}>
 					{#each STATUS_OPTIONS as status}
 						<option value={status}>{status || '全部状态'}</option>
@@ -275,6 +304,7 @@
 				<button
 					class="task-btn"
 					on:click={() => {
+						loadTaskProviders();
 						resetAndLoadTasks();
 					}}
 				>
@@ -284,6 +314,7 @@
 				<button
 					class="task-btn task-btn-icon"
 					on:click={() => {
+						loadTaskProviders();
 						resetAndLoadTasks();
 					}}
 					aria-label="refresh"
@@ -436,7 +467,7 @@
 <style>
 	.task-filter-grid {
 		display: grid;
-		grid-template-columns: 1fr 1fr 1.2fr auto auto auto;
+		grid-template-columns: 1fr 1fr 1fr 1.2fr auto auto auto;
 		gap: 0.5rem;
 	}
 

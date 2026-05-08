@@ -31,9 +31,48 @@ export type GenerationTaskItem = {
 	request_id?: string | null;
 };
 
+type UnifiedTaskApiItem = {
+	id: string;
+	provider?: string;
+	provider_task_id?: string;
+	tool_name?: string;
+	skill_name?: string | null;
+	user_id?: string | null;
+	user_name?: string | null;
+	chat_id?: string | null;
+	model?: string | null;
+	status?: string | null;
+	archive_status?: string | null;
+	progress?: number | null;
+	download_ready?: boolean;
+	can_delete?: boolean;
+	can_cancel?: boolean;
+	error_code?: string | null;
+	error_message?: string | null;
+	request_id?: string | null;
+	deleted_at?: number | null;
+	created_at?: number;
+	updated_at?: number;
+	finished_at?: number | null;
+	thumbnail_url?: string | null;
+	video_preview_url?: string | null;
+	video_download_url?: string | null;
+};
+
+type UnifiedTaskListResponse = {
+	items: UnifiedTaskApiItem[];
+	total: number;
+	offset: number;
+	limit: number;
+};
+
 export type GenerationTaskUserItem = {
 	user_id: string;
 	user_name: string;
+};
+
+export type GenerationTaskProviderResponse = {
+	providers: string[];
 };
 
 export type GenerationTaskPreview = {
@@ -53,10 +92,48 @@ const buildAuthHeaders = (token: string): HeadersInit => ({
 	authorization: `Bearer ${token}`
 });
 
+const mapUnifiedTaskToLegacy = (item: UnifiedTaskApiItem): GenerationTaskItem => {
+	const taskId = item.id || item.provider_task_id || '';
+	return {
+		task_id: taskId,
+		user_id: item.user_id ?? null,
+		user_name: item.user_name ?? null,
+		package_id: null,
+		chat_id: item.chat_id ?? null,
+		model: item.model ?? null,
+		status: item.status ?? null,
+		archive_status: item.archive_status ?? null,
+		archive_error: null,
+		archive_retry_count: null,
+		archive_updated_at: null,
+		download_ready: Boolean(item.download_ready),
+		can_delete: Boolean(item.can_delete),
+		deleted_at: item.deleted_at ?? null,
+		created_at: item.created_at ?? 0,
+		updated_at: item.updated_at ?? 0,
+		references: [],
+		duration: null,
+		ratio: null,
+		watermark: null,
+		generate_audio: null,
+		thumbnail_url: item.thumbnail_url ?? null,
+		video_preview_url: item.video_preview_url ?? null,
+		video_download_url:
+			item.video_download_url ?? `/api/v1/tasks/${encodeURIComponent(taskId)}/download`,
+		video_url: null,
+		error_code: item.error_code ?? null,
+		error_message: item.error_message ?? null,
+		request_id: item.request_id ?? null
+	};
+};
+
 export const listGenerationTasks = async (
 	token: string,
 	params: {
 		user_id?: string;
+		provider?: string;
+		skill_name?: string;
+		tool_name?: string;
 		status?: string;
 		model?: string;
 		chat_id?: string;
@@ -69,6 +146,9 @@ export const listGenerationTasks = async (
 ): Promise<GenerationTaskItem[]> => {
 	const query = new URLSearchParams();
 	if (params.user_id) query.append('user_id', params.user_id);
+	if (params.provider) query.append('provider', params.provider);
+	if (params.skill_name) query.append('skill_name', params.skill_name);
+	if (params.tool_name) query.append('tool_name', params.tool_name);
 	if (params.status) query.append('status', params.status);
 	if (params.model) query.append('model', params.model);
 	if (params.chat_id) query.append('chat_id', params.chat_id);
@@ -83,7 +163,7 @@ export const listGenerationTasks = async (
 	query.append('limit', String(params.limit ?? 50));
 
 	let error = null;
-	const res = await fetch(`${WEBUI_API_BASE_URL}/material-packages/tasks?${query.toString()}`, {
+	const res = await fetch(`${WEBUI_API_BASE_URL}/tasks?${query.toString()}`, {
 		method: 'GET',
 		headers: buildAuthHeaders(token)
 	})
@@ -98,12 +178,18 @@ export const listGenerationTasks = async (
 		});
 
 	if (error) throw error;
-	return Array.isArray(res) ? res : [];
+	if (Array.isArray(res)) {
+		return res;
+	}
+	if (res && Array.isArray((res as UnifiedTaskListResponse).items)) {
+		return (res as UnifiedTaskListResponse).items.map(mapUnifiedTaskToLegacy);
+	}
+	return [];
 };
 
 export const listGenerationTaskUsers = async (token: string): Promise<GenerationTaskUserItem[]> => {
 	let error = null;
-	const res = await fetch(`${WEBUI_API_BASE_URL}/material-packages/tasks/users`, {
+	const res = await fetch(`${WEBUI_API_BASE_URL}/tasks/users`, {
 		method: 'GET',
 		headers: buildAuthHeaders(token)
 	})
@@ -118,7 +204,46 @@ export const listGenerationTaskUsers = async (token: string): Promise<Generation
 		});
 
 	if (error) throw error;
-	return Array.isArray(res) ? res : [];
+	if (Array.isArray(res)) {
+		return res;
+	}
+	if (res && Array.isArray((res as { users?: GenerationTaskUserItem[] }).users)) {
+		return (res as { users: GenerationTaskUserItem[] }).users;
+	}
+	return [];
+};
+
+export const listGenerationTaskProviders = async (
+	token: string,
+	userId?: string
+): Promise<string[]> => {
+	const query = new URLSearchParams();
+	if (userId) query.append('user_id', userId);
+	query.append('include_deleted', 'false');
+
+	let error = null;
+	const res = await fetch(`${WEBUI_API_BASE_URL}/tasks/providers?${query.toString()}`, {
+		method: 'GET',
+		headers: buildAuthHeaders(token)
+	})
+		.then(async (resp) => {
+			if (!resp.ok) throw await resp.json();
+			return resp.json();
+		})
+		.catch((err) => {
+			error = err?.detail || err?.message || 'Failed to list generation task providers';
+			console.error(err);
+			return null;
+		});
+
+	if (error) throw error;
+	if (res && Array.isArray((res as GenerationTaskProviderResponse).providers)) {
+		return (res as GenerationTaskProviderResponse).providers;
+	}
+	if (Array.isArray(res)) {
+		return res as string[];
+	}
+	return [];
 };
 
 export const getGenerationTaskPreview = async (
@@ -126,13 +251,10 @@ export const getGenerationTaskPreview = async (
 	taskId: string
 ): Promise<GenerationTaskPreview> => {
 	let error = null;
-	const res = await fetch(
-		`${WEBUI_API_BASE_URL}/material-packages/tasks/${encodeURIComponent(taskId)}/preview`,
-		{
-			method: 'GET',
-			headers: buildAuthHeaders(token)
-		}
-	)
+	const res = await fetch(`${WEBUI_API_BASE_URL}/tasks/${encodeURIComponent(taskId)}/preview`, {
+		method: 'GET',
+		headers: buildAuthHeaders(token)
+	})
 		.then(async (resp) => {
 			if (!resp.ok) throw await resp.json();
 			return resp.json();
@@ -156,13 +278,10 @@ export const deleteGenerationTask = async (
 	if (deleteReason) query.append('delete_reason', deleteReason);
 
 	let error = null;
-	const res = await fetch(
-		`${WEBUI_API_BASE_URL}/material-packages/tasks/${encodeURIComponent(taskId)}?${query.toString()}`,
-		{
-			method: 'DELETE',
-			headers: buildAuthHeaders(token)
-		}
-	)
+	const res = await fetch(`${WEBUI_API_BASE_URL}/tasks/${encodeURIComponent(taskId)}?${query.toString()}`, {
+		method: 'DELETE',
+		headers: buildAuthHeaders(token)
+	})
 		.then(async (resp) => {
 			if (!resp.ok) throw await resp.json();
 			return resp.json();
@@ -178,15 +297,12 @@ export const deleteGenerationTask = async (
 };
 
 export const downloadGenerationTask = async (token: string, taskId: string): Promise<Blob> => {
-	const resp = await fetch(
-		`${WEBUI_API_BASE_URL}/material-packages/tasks/${encodeURIComponent(taskId)}/download`,
-		{
-			method: 'GET',
-			headers: {
-				authorization: `Bearer ${token}`
-			}
+	const resp = await fetch(`${WEBUI_API_BASE_URL}/tasks/${encodeURIComponent(taskId)}/download`, {
+		method: 'GET',
+		headers: {
+			authorization: `Bearer ${token}`
 		}
-	);
+	});
 
 	if (!resp.ok) {
 		let detail = 'Failed to download task';

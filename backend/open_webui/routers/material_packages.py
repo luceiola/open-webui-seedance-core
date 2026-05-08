@@ -337,6 +337,10 @@ TERMINAL_TASK_STATUSES: set[str] = {
     'canceled',
 }
 
+GENERATION_SKILL_SEEDANCE = 'seedance'
+GENERATION_SKILL_HAPPYHORSE = 'happyhorse'
+GENERATION_SKILL_UNKNOWN = 'unknown'
+
 ARCHIVE_STATUS_NOT_REQUIRED = 'NOT_REQUIRED'
 ARCHIVE_STATUS_PENDING = 'PENDING'
 ARCHIVE_STATUS_RUNNING = 'RUNNING'
@@ -533,6 +537,32 @@ def _normalize_task_defaults(task_record: dict[str, Any], *, owner_user_id: str)
         task_record['status'] = status_value
         changed = True
 
+    model_value = str(task_record.get('model') or '').strip()
+    skill_value = str(task_record.get('skill_name') or '').strip().lower()
+    inferred_skill = _generation_skill_from_model(model_value)
+    if not skill_value or skill_value == GENERATION_SKILL_UNKNOWN:
+        task_record['skill_name'] = inferred_skill
+        changed = True
+
+    provider_value = str(task_record.get('provider') or '').strip().lower()
+    if not provider_value:
+        task_record['provider'] = 'ark'
+        changed = True
+
+    provider_task_id = str(task_record.get('provider_task_id') or '').strip()
+    if not provider_task_id:
+        task_record['provider_task_id'] = task_id
+        changed = True
+
+    tool_name = str(task_record.get('tool_name') or '').strip()
+    if not tool_name:
+        task_record['tool_name'] = 'material_packages.generate'
+        changed = True
+
+    if task_record.get('progress') is None:
+        task_record['progress'] = None
+        changed = True
+
     if _is_succeeded_task_status(status_value):
         desired_archive = str(task_record.get('archive_status') or '').strip().upper()
         if not desired_archive:
@@ -561,6 +591,15 @@ def _normalize_task_defaults(task_record: dict[str, Any], *, owner_user_id: str)
         changed = True
     if 'delete_reason' not in task_record:
         task_record['delete_reason'] = None
+        changed = True
+
+    finished_at = int(task_record.get('finished_at') or 0)
+    if _is_terminal_task_status(status_value):
+        if finished_at <= 0:
+            task_record['finished_at'] = int(task_record.get('updated_at') or int(time.time()))
+            changed = True
+    elif finished_at > 0:
+        task_record['finished_at'] = None
         changed = True
 
     if _sync_task_serving_fields(owner_user_id, task_record):
@@ -929,10 +968,16 @@ def _touch_task_record(
     task_id: str,
     *,
     user_name: Optional[str] = None,
+    provider: Optional[str] = None,
+    provider_task_id: Optional[str] = None,
+    tool_name: Optional[str] = None,
+    skill_name: Optional[str] = None,
     package_id: Optional[str] = None,
     chat_id: Optional[str] = None,
     model: Optional[str] = None,
     references: Optional[list[str]] = None,
+    progress: Optional[float] = None,
+    finished_at: Optional[int] = None,
     duration: Optional[int] = None,
     ratio: Optional[str] = None,
     watermark: Optional[bool] = None,
@@ -952,6 +997,14 @@ def _touch_task_record(
 
     if package_id is not None:
         current['package_id'] = package_id
+    if provider is not None:
+        current['provider'] = str(provider).strip().lower() or 'ark'
+    if provider_task_id is not None:
+        current['provider_task_id'] = str(provider_task_id).strip() or task_id
+    if tool_name is not None:
+        current['tool_name'] = str(tool_name).strip() or 'material_packages.generate'
+    if skill_name is not None:
+        current['skill_name'] = str(skill_name).strip().lower() or GENERATION_SKILL_UNKNOWN
     if chat_id is not None:
         current['chat_id'] = chat_id
     if user_name is not None:
@@ -960,6 +1013,16 @@ def _touch_task_record(
         current['model'] = model
     if references is not None:
         current['references'] = list(references)
+    if progress is not None:
+        try:
+            current['progress'] = float(progress)
+        except Exception:
+            pass
+    if finished_at is not None:
+        try:
+            current['finished_at'] = int(finished_at)
+        except Exception:
+            pass
     if duration is not None:
         current['duration'] = duration
     if ratio is not None:
@@ -977,6 +1040,10 @@ def _touch_task_record(
         parsed_status = _extract_task_status(raw_last_response)
         if parsed_status:
             current['status'] = _normalize_task_status(parsed_status)
+
+        parsed_progress = _extract_progress_from_payload(raw_last_response)
+        if parsed_progress is not None:
+            current['progress'] = parsed_progress
 
         video_url = _find_first_video_url(raw_last_response)
         if video_url:
@@ -1604,18 +1671,79 @@ def _clean_prompt(prompt: str, references: list[str]) -> str:
     return cleaned
 
 
+def _is_happyhorse_model(model: str) -> bool:
+    m = (model or '').lower().replace('_', '-').strip()
+    return 'happyhorse' in m
+
+
 def _is_seedance_model(model: str) -> bool:
     m = (model or '').lower()
     return 'seedance' in m or 'seedance' in m.replace('-', '')
 
 
-def _build_seedance_reference_block(media_type: str, url: str) -> dict[str, Any]:
+def _generation_skill_from_model(model: Optional[str]) -> str:
+    raw = str(model or '').strip()
+    if _is_seedance_model(raw):
+        return GENERATION_SKILL_SEEDANCE
+    if _is_happyhorse_model(raw):
+        return GENERATION_SKILL_HAPPYHORSE
+    return GENERATION_SKILL_UNKNOWN
+
+
+def _extract_progress_from_payload(payload: Any) -> Optional[float]:
+    def _normalize_number(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            number = float(value)
+        except Exception:
+            return None
+        if number < 0:
+            number = 0.0
+        # Some providers return 0~1 progress ratio.
+        if number <= 1:
+            number = number * 100
+        if number > 100:
+            number = 100.0
+        return round(number, 2)
+
+    if isinstance(payload, dict):
+        for key in ('progress', 'percent', 'percentage'):
+            value = _normalize_number(payload.get(key))
+            if value is not None:
+                return value
+        for key in ('data', 'result', 'output'):
+            value = _extract_progress_from_payload(payload.get(key))
+            if value is not None:
+                return value
+        for value in payload.values():
+            nested = _extract_progress_from_payload(value)
+            if nested is not None:
+                return nested
+        return None
+
+    if isinstance(payload, list):
+        for item in payload:
+            nested = _extract_progress_from_payload(item)
+            if nested is not None:
+                return nested
+    return None
+
+
+def _build_generation_reference_block(
+    *,
+    model_skill: str,
+    media_type: str,
+    url: str,
+) -> dict[str, Any]:
     if media_type == 'image':
         return {
             'type': 'image_url',
             'image_url': {'url': url},
             'role': 'reference_image',
         }
+    if model_skill == GENERATION_SKILL_HAPPYHORSE:
+        raise ValueError('HappyHorse supports image references only')
     if media_type == 'video':
         return {
             'type': 'video_url',
@@ -1628,7 +1756,16 @@ def _build_seedance_reference_block(media_type: str, url: str) -> dict[str, Any]
             'audio_url': {'url': url},
             'role': 'reference_audio',
         }
-    raise ValueError(f'Unsupported media type for seedance tasks: {media_type}')
+    raise ValueError(f'Unsupported media type for {model_skill} tasks: {media_type}')
+
+
+def _build_seedance_reference_block(media_type: str, url: str) -> dict[str, Any]:
+    # Backward-compatible wrapper for older call sites.
+    return _build_generation_reference_block(
+        model_skill=GENERATION_SKILL_SEEDANCE,
+        media_type=media_type,
+        url=url,
+    )
 
 
 def _to_response_model(manifest: dict[str, Any]) -> MaterialPackageResponse:
@@ -2236,24 +2373,40 @@ async def generate_with_material_package(
     base_url = _get_ark_base_url()
     headers = _get_ark_headers()
 
-    if _is_seedance_model(form_data.model):
-        # Seedance models use content generations tasks API and TOS URLs only.
-        seedance_content: list[dict[str, Any]] = [
+    generation_skill = _generation_skill_from_model(form_data.model)
+    if generation_skill in {GENERATION_SKILL_SEEDANCE, GENERATION_SKILL_HAPPYHORSE}:
+        # Seedance/HappyHorse models use content generations tasks API and TOS URLs only.
+        generation_content: list[dict[str, Any]] = [
             {'type': 'text', 'text': cleaned_prompt},
         ]
         tos_ctx = _get_tos_context()
         if not tos_ctx:
             raise HTTPException(
                 status_code=400,
-                detail='TOS is required for seedance generation. Set MATERIAL_PACK_TOS_ENABLED=true and configure TOS_ACCESS_KEY/TOS_SECRET_KEY/TOS_ENDPOINT/TOS_REGION/TOS_BUCKET.',
+                detail='TOS is required for generation tasks. Set MATERIAL_PACK_TOS_ENABLED=true and configure TOS_ACCESS_KEY/TOS_SECRET_KEY/TOS_ENDPOINT/TOS_REGION/TOS_BUCKET.',
             )
 
         unresolved_references: list[dict[str, Any]] = []
         manifest_changed = False
 
         async with httpx.AsyncClient(timeout=180) as client:
-            for ref in references:
+            for idx, ref in enumerate(references):
                 item = assets_map[ref]
+                if generation_skill == GENERATION_SKILL_HAPPYHORSE and item.media_type != 'image':
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            'ok': False,
+                            'error_code': 'ModelConstraintViolation',
+                            'error_message': f'{form_data.model} only supports image references',
+                            'details': {
+                                'field': f'references[{idx}].media_type',
+                                'allowed': ['image'],
+                                'actual': item.media_type,
+                            },
+                        },
+                    )
+
                 file_url: Optional[str] = None
                 asset_raw = assets_raw_map.get(ref, {})
                 tos_url, changed = _ensure_tos_url_for_asset(
@@ -2279,7 +2432,13 @@ async def generate_with_material_package(
                     )
                     continue
 
-                seedance_content.append(_build_seedance_reference_block(item.media_type, file_url))
+                generation_content.append(
+                    _build_generation_reference_block(
+                        model_skill=generation_skill,
+                        media_type=item.media_type,
+                        url=file_url,
+                    )
+                )
 
             if manifest_changed:
                 manifest['updated_at'] = int(time.time())
@@ -2292,7 +2451,7 @@ async def generate_with_material_package(
                         'error': 'Unable to resolve TOS URL for some references',
                         'unresolved_references': unresolved_references,
                         'guidance': (
-                            'Seedance now uses TOS only. '
+                            'Generation now uses TOS only. '
                             'Please check TOS credentials, bucket permission, and whether local stored files still exist for this package.'
                         ),
                     },
@@ -2300,7 +2459,7 @@ async def generate_with_material_package(
 
             payload: dict[str, Any] = {
                 'model': form_data.model,
-                'content': seedance_content,
+                'content': generation_content,
             }
             if form_data.duration is not None:
                 payload['duration'] = form_data.duration
@@ -2308,7 +2467,7 @@ async def generate_with_material_package(
                 payload['ratio'] = form_data.ratio
             if form_data.watermark is not None:
                 payload['watermark'] = form_data.watermark
-            if form_data.generate_audio is not None:
+            if generation_skill == GENERATION_SKILL_SEEDANCE and form_data.generate_audio is not None:
                 payload['generate_audio'] = form_data.generate_audio
 
             resp = await client.post(f'{base_url}/contents/generations/tasks', headers=headers, json=payload)
@@ -2333,6 +2492,10 @@ async def generate_with_material_package(
                 str(user.id),
                 str(task_id),
                 user_name=str(user.name or user.username or user.id),
+                provider='ark',
+                provider_task_id=str(task_id),
+                tool_name='material_packages.generate',
+                skill_name=generation_skill,
                 package_id=package_id,
                 chat_id=manifest.get('chat_id'),
                 model=form_data.model,
@@ -2358,7 +2521,7 @@ async def generate_with_material_package(
 
     raise HTTPException(
         status_code=400,
-        detail='Only seedance models are supported in TOS-only mode.',
+        detail='Only seedance/happyhorse models are supported in TOS-only mode.',
     )
 
 
