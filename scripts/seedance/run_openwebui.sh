@@ -12,6 +12,11 @@ if ! command -v python >/dev/null 2>&1; then
   echo "Activate conda env that contains runtime dependencies."
   exit 1
 fi
+if ! command -v open-webui >/dev/null 2>&1; then
+  echo "[ERROR] open-webui command not found in current env."
+  echo "Activate conda env and install project dependencies."
+  exit 1
+fi
 
 bash "${ROOT_DIR}/scripts/seedance/preflight.sh" --auto-fix
 
@@ -44,4 +49,4 @@ cd "${ROOT_DIR}"
 # environment has open_webui editable-installed from another path.
 export PYTHONPATH="${ROOT_DIR}/backend${PYTHONPATH:+:${PYTHONPATH}}"
 echo "[INFO] PYTHONPATH=${ROOT_DIR}/backend${PYTHONPATH:+:...}"
-exec python -m open_webui serve --host "${HOST}" --port "${PORT}"
+exec open-webui serve --host "${HOST}" --port "${PORT}"
