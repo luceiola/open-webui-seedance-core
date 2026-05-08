@@ -163,7 +163,7 @@ export const listGenerationTasks = async (
 	query.append('limit', String(params.limit ?? 50));
 
 	let error = null;
-	const res = await fetch(`${WEBUI_API_BASE_URL}/tasks?${query.toString()}`, {
+	const res = await fetch(`${WEBUI_API_BASE_URL}/tasks/?${query.toString()}`, {
 		method: 'GET',
 		headers: buildAuthHeaders(token)
 	})
