@@ -1387,8 +1387,9 @@ async def _archive_task_record_if_needed(
         return task_record
 
     archive_status = str(task_record.get('archive_status') or '').strip().upper() or ARCHIVE_STATUS_PENDING
-    if archive_status == ARCHIVE_STATUS_SUCCEEDED and _sync_task_serving_fields(owner_user_id, task_record):
-        _save_task_record(owner_user_id, task_id, task_record)
+    if archive_status == ARCHIVE_STATUS_SUCCEEDED:
+        if _sync_task_serving_fields(owner_user_id, task_record):
+            _save_task_record(owner_user_id, task_id, task_record)
         return task_record
 
     retry_count = int(task_record.get('archive_retry_count') or 0)

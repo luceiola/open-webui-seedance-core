@@ -245,6 +245,9 @@ def _build_material_packages_router_fixture(tmp_path: Path):
         MATERIAL_PACKAGES_ROUTER_PATH,
         stubs,
     )
+    controlled_env = config_module.CACHE_DIR / 'test.env'
+    controlled_env.write_text('', encoding='utf-8')
+    module.ARK_ENV_FILE_CANDIDATES = [controlled_env]
     return module
 
 
@@ -419,6 +422,58 @@ def test_happyhorse_generate_rejects_non_image_reference(material_packages_route
     assert isinstance(exc_info.value.detail, dict)
     assert exc_info.value.detail.get('error_code') == 'ModelConstraintViolation'
     assert exc_info.value.detail.get('details', {}).get('actual') == 'video'
+
+
+def test_archive_succeeded_task_does_not_redownload(material_packages_router_module):
+    material_module = material_packages_router_module
+    user_id = 'user-1'
+    task_id = 'task-1'
+
+    video_relpath = f'task_archives/{task_id}.mp4'
+    thumb_relpath = f'task_thumbnails/{task_id}.jpg'
+    user_root = material_module._user_root_dir(user_id)
+    video_path = user_root / video_relpath
+    thumb_path = user_root / thumb_relpath
+    video_path.parent.mkdir(parents=True, exist_ok=True)
+    thumb_path.parent.mkdir(parents=True, exist_ok=True)
+    video_path.write_bytes(b'fake-video')
+    thumb_path.write_bytes(b'fake-thumb')
+
+    task_record = {
+        'task_id': task_id,
+        'user_id': user_id,
+        'status': 'SUCCEEDED',
+        'archive_status': 'SUCCEEDED',
+        'archive_retry_count': 0,
+        'archive_updated_at': 1,
+        'created_at': 1,
+        'updated_at': 1,
+        'artifact_kind': 'video',
+        'video_url': 'https://example.com/video.mp4',
+        'archived_video_path': video_relpath,
+        'thumbnail_path': thumb_relpath,
+        'download_ready': True,
+        'video_download_url': material_module._build_task_download_url(task_id),
+        'video_preview_url': material_module._build_task_preview_url(task_id),
+        'thumbnail_url': material_module._build_task_thumbnail_url(task_id),
+    }
+
+    calls = {'download': 0}
+
+    async def _download_video_file(*args, **kwargs):
+        calls['download'] += 1
+
+    material_module._download_video_file = _download_video_file
+
+    result = _run(material_module._archive_task_record_if_needed(user_id, dict(task_record)))
+
+    assert calls['download'] == 0
+    assert result['archive_status'] == 'SUCCEEDED'
+    assert int(result.get('archive_retry_count') or 0) == 0
+    assert result['download_ready'] is True
+    assert result['video_download_url'] == material_module._build_task_download_url(task_id)
+    assert result['video_preview_url'] == material_module._build_task_preview_url(task_id)
+    assert result['thumbnail_url'] == material_module._build_task_thumbnail_url(task_id)
 
 
 def test_key_routing_alias_raises_on_multi_group_conflict(material_packages_router_module):
