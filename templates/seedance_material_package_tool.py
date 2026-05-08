@@ -102,6 +102,13 @@ class Tools:
 
         # 1) FastAPI detail may already be a dict.
         if isinstance(detail, dict):
+            direct_code = detail.get("error_code") or detail.get("code")
+            direct_message = detail.get("error_message") or detail.get("message")
+            if isinstance(direct_code, str) and direct_code.strip():
+                error_code = direct_code.strip()
+            if isinstance(direct_message, str) and direct_message.strip():
+                error_message = direct_message.strip()
+
             err = detail.get("error")
             if isinstance(err, dict):
                 error_code = err.get("code")
@@ -140,6 +147,15 @@ class Tools:
             error_message = error_message or err.get("message")
             request_id = request_id or self._extract_request_id(error_message or "")
 
+        # 4) Flat error payload style: {"error_code":"...","error_message":"..."}
+        if parsed_json:
+            if not error_code and isinstance(parsed_json.get("error_code"), str):
+                error_code = parsed_json.get("error_code")
+            if not error_message and isinstance(parsed_json.get("error_message"), str):
+                error_message = parsed_json.get("error_message")
+            if not request_id and isinstance(parsed_json.get("request_id"), str):
+                request_id = parsed_json.get("request_id")
+
         return {
             "ok": False,
             "status_code": response.status_code,
@@ -159,6 +175,13 @@ class Tools:
         request_id: Optional[str] = None
 
         if isinstance(detail, dict):
+            direct_code = detail.get("error_code") or detail.get("code")
+            direct_message = detail.get("error_message") or detail.get("message")
+            if isinstance(direct_code, str) and direct_code.strip():
+                error_code = direct_code.strip()
+            if isinstance(direct_message, str) and direct_message.strip():
+                error_message = direct_message.strip()
+
             err = detail.get("error")
             if isinstance(err, dict):
                 error_code = err.get("code")
@@ -549,6 +572,8 @@ class Tools:
         request_id: Optional[str] = None,
         error_code: Optional[str] = None,
         error_message: Optional[str] = None,
+        credential_alias: Optional[str] = None,
+        routing_group_id: Optional[str] = None,
         __request__: Optional[Request] = None,
     ) -> bool:
         tid = (task_id or "").strip()
@@ -582,6 +607,10 @@ class Tools:
             payload["error_code"] = error_code
         if error_message:
             payload["error_message"] = error_message
+        if credential_alias:
+            payload["credential_alias"] = credential_alias
+        if routing_group_id:
+            payload["routing_group_id"] = routing_group_id
 
         bridge = await self._request("POST", "/api/v1/tasks/bridge/upsert", __request__, payload)
         return bool(bridge.get("ok"))
@@ -1294,19 +1323,6 @@ class Tools:
                 ensure_ascii=False,
             )
 
-        api_key = self._get_ark_api_key()
-        if not api_key:
-            return json.dumps(
-                {
-                    "ok": False,
-                    "status_code": 400,
-                    "error_code": None,
-                    "error_message": "ARK_API_KEY is not configured",
-                    "request_id": None,
-                },
-                ensure_ascii=False,
-            )
-
         payload: dict[str, Any] = {"model": model_id, "content": seedance_content}
         if instructions.strip():
             payload["instructions"] = instructions.strip()
@@ -1319,18 +1335,21 @@ class Tools:
         if generate_audio is not None:
             payload["generate_audio"] = generate_audio
 
-        base_url = self._get_ark_base_url()
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        async with httpx.AsyncClient(timeout=self.valves.REQUEST_TIMEOUT_SECONDS) as client:
-            resp = await client.post(f"{base_url}/contents/generations/tasks", headers=headers, json=payload)
+        submit = await self._request(
+            "POST",
+            "/api/v1/material-packages/providers/ark/generations/tasks",
+            __request__,
+            payload,
+        )
+        if not submit.get("ok"):
+            return json.dumps(submit, ensure_ascii=False)
 
-        if resp.status_code >= 400:
-            return json.dumps(self._normalize_error(resp), ensure_ascii=False)
-
-        try:
-            response_json = resp.json()
-        except Exception:
-            response_json = {"raw_text": resp.text}
+        submit_data = submit.get("data") if isinstance(submit.get("data"), dict) else {}
+        response_json = submit_data.get("data") if isinstance(submit_data.get("data"), dict) else {}
+        credential_alias = str(submit_data.get("credential_alias") or "").strip() or None
+        routing_group_id = str(submit_data.get("routing_group_id") or "").strip() or None
+        if not isinstance(response_json, dict):
+            response_json = {}
 
         task_id = (
             response_json.get("task_id")
@@ -1350,6 +1369,8 @@ class Tools:
                     references=refs,
                     raw_submit_response=response_json,
                     raw_last_response=response_json,
+                    credential_alias=credential_alias,
+                    routing_group_id=routing_group_id,
                     __request__=__request__,
                 )
             except Exception:

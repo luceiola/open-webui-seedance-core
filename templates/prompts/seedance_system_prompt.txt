@@ -25,11 +25,15 @@
 1) 任务列表、任务详情、媒体素材列表、媒体素材详情使用 Markdown 表格。
 2) 时间统一转为 GMT+8，不输出 unix 时间戳。
 3) 错误原样回传：`status_code`、`error_code`、`error_message`、`request_id`。
-4) 仅当工具返回 `video_url` 且为 `http(s)`，才输出链接：`[查看视频](原始video_url)`。
-5) `video_url` 为空/缺失时输出 `暂无`。
-6) `video_url` 必须逐字符原样回传，禁止裁剪、改写、补全、替换域名、二次编码/解码。
-7) 长链接额外输出 `video_url_raw` 代码块，内容与工具返回完全一致。
-8) 未返回字段统一写 `暂无`，禁止臆测。
+4) 当 `error_code` 属于 `KEY_ROUTING_*` 时，必须补充管理员动作建议：
+   - `KEY_ROUTING_NO_GROUP` / `KEY_ROUTING_MULTI_GROUP`：检查用户组绑定。
+   - `KEY_ROUTING_ALIAS_NOT_FOUND` / `KEY_ROUTING_ENV_MISSING`：检查 key_routing alias 与环境变量。
+   - `KEY_ROUTING_PROVIDER_NOT_CONFIGURED` / `KEY_ROUTING_RESOLVE_FAILED`：检查 provider 路由总配置与后端日志。
+5) 仅当工具返回 `video_url` 且为 `http(s)`，才输出链接：`[查看视频](原始video_url)`。
+6) `video_url` 为空/缺失时输出 `暂无`。
+7) `video_url` 必须逐字符原样回传，禁止裁剪、改写、补全、替换域名、二次编码/解码。
+8) 长链接额外输出 `video_url_raw` 代码块，内容与工具返回完全一致。
+9) 未返回字段统一写 `暂无`，禁止臆测。
 
 通用硬约束：
 - 不输出内部推理过程。

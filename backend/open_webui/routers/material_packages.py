@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 
 from open_webui.config import CACHE_DIR
 from open_webui.models.files import Files
+from open_webui.models.groups import Groups
 from open_webui.models.users import UserModel, Users
 from open_webui.storage.provider import Storage
 from open_webui.utils.auth import get_verified_user
@@ -44,6 +45,23 @@ ARK_ENV_FILE_CANDIDATES: list[Path] = [
     Path.cwd() / 'config' / 'ark.env',
     Path.cwd() / '.env',
 ]
+
+KEY_ROUTING_CONFIG_PATH = (
+    Path(os.getenv('KEY_ROUTING_CONFIG_FILE', '')).expanduser().resolve()
+    if os.getenv('KEY_ROUTING_CONFIG_FILE')
+    else (Path.cwd() / 'config' / 'key_routing.json').resolve()
+)
+
+KEY_ROUTING_ERROR_NO_GROUP = 'KEY_ROUTING_NO_GROUP'
+KEY_ROUTING_ERROR_MULTI_GROUP = 'KEY_ROUTING_MULTI_GROUP'
+KEY_ROUTING_ERROR_ALIAS_NOT_FOUND = 'KEY_ROUTING_ALIAS_NOT_FOUND'
+KEY_ROUTING_ERROR_ENV_MISSING = 'KEY_ROUTING_ENV_MISSING'
+KEY_ROUTING_ERROR_PROVIDER_NOT_CONFIGURED = 'KEY_ROUTING_PROVIDER_NOT_CONFIGURED'
+KEY_ROUTING_ERROR_RESOLVE_FAILED = 'KEY_ROUTING_RESOLVE_FAILED'
+
+_KEY_ROUTING_CACHE_PATH: Optional[Path] = None
+_KEY_ROUTING_CACHE_MTIME_NS: Optional[int] = None
+_KEY_ROUTING_CACHE_DATA: dict[str, Any] = {}
 
 
 SUPPORTED_EXTENSIONS: dict[str, str] = {
@@ -181,6 +199,24 @@ class GenerateWithPackageResponse(BaseModel):
     raw_response: dict[str, Any]
 
 
+class ArkGenerationTaskSubmitRequest(BaseModel):
+    model: str = Field(min_length=1)
+    content: list[dict[str, Any]] = Field(default_factory=list)
+    instructions: Optional[str] = None
+    duration: Optional[int] = Field(default=None, ge=1, le=60)
+    ratio: Optional[str] = None
+    watermark: Optional[bool] = None
+    generate_audio: Optional[bool] = None
+
+
+class ArkGenerationTaskProxyResponse(BaseModel):
+    ok: bool = True
+    provider: str = 'ark'
+    credential_alias: Optional[str] = None
+    routing_group_id: Optional[str] = None
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
 class GenerationTaskStatusResponse(BaseModel):
     task_id: str
     status: Optional[str] = None
@@ -216,6 +252,8 @@ class GenerationTaskListItem(BaseModel):
     error_code: Optional[str] = None
     error_message: Optional[str] = None
     request_id: Optional[str] = None
+    credential_alias: Optional[str] = None
+    routing_group_id: Optional[str] = None
 
 
 class GenerationTaskUserItem(BaseModel):
@@ -275,8 +313,216 @@ def _get_ark_base_url() -> str:
     return base
 
 
-def _get_ark_headers() -> dict[str, str]:
-    api_key = (os.getenv('ARK_API_KEY') or _read_env_value_from_file('ARK_API_KEY') or '').strip()
+def _to_int_value(raw: Any, default: int = 0) -> int:
+    try:
+        return int(raw)
+    except Exception:
+        return default
+
+
+def _key_routing_error(
+    *,
+    code: str,
+    message: str,
+    status_code: int = status.HTTP_400_BAD_REQUEST,
+) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail={
+            'code': code,
+            'message': message,
+            'request_id': None,
+        },
+    )
+
+
+def _load_key_routing_config() -> dict[str, Any]:
+    global _KEY_ROUTING_CACHE_PATH, _KEY_ROUTING_CACHE_MTIME_NS, _KEY_ROUTING_CACHE_DATA
+
+    path = KEY_ROUTING_CONFIG_PATH
+    if not path.exists() or not path.is_file():
+        _KEY_ROUTING_CACHE_PATH = path
+        _KEY_ROUTING_CACHE_MTIME_NS = None
+        _KEY_ROUTING_CACHE_DATA = {}
+        return {}
+
+    mtime_ns = _to_int_value(path.stat().st_mtime_ns, 0)
+    if _KEY_ROUTING_CACHE_PATH == path and _KEY_ROUTING_CACHE_MTIME_NS == mtime_ns:
+        return dict(_KEY_ROUTING_CACHE_DATA)
+
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except Exception as exc:
+        raise _key_routing_error(
+            code=KEY_ROUTING_ERROR_RESOLVE_FAILED,
+            message=f'Failed to load key routing config: {exc}',
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    if not isinstance(payload, dict):
+        raise _key_routing_error(
+            code=KEY_ROUTING_ERROR_RESOLVE_FAILED,
+            message='Invalid key routing config: root must be an object',
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    _KEY_ROUTING_CACHE_PATH = path
+    _KEY_ROUTING_CACHE_MTIME_NS = mtime_ns
+    _KEY_ROUTING_CACHE_DATA = payload
+    return dict(payload)
+
+
+def _get_provider_key_routing_config(provider: str) -> Optional[dict[str, Any]]:
+    normalized = str(provider or '').strip().lower()
+    if not normalized:
+        return None
+    config = _load_key_routing_config()
+    providers = config.get('providers') if isinstance(config.get('providers'), dict) else {}
+    provider_config = providers.get(normalized)
+    if isinstance(provider_config, dict):
+        return provider_config
+    return None
+
+
+def _resolve_provider_legacy_api_key(provider: str) -> Optional[str]:
+    normalized = str(provider or '').strip().lower()
+    if normalized in {'seedance', 'ark'}:
+        return (os.getenv('ARK_API_KEY') or _read_env_value_from_file('ARK_API_KEY') or '').strip() or None
+    if normalized in {'happyhorse', 'dashscope'}:
+        return (os.getenv('DASHSCOPE_API_KEY') or _read_env_value_from_file('DASHSCOPE_API_KEY') or '').strip() or None
+    return None
+
+
+def _resolve_key_routing_alias(
+    *,
+    provider: str,
+    provider_config: dict[str, Any],
+    user_group_ids: set[str],
+    user_group_names: set[str],
+) -> tuple[str, Optional[str]]:
+    bindings = provider_config.get('bindings') if isinstance(provider_config.get('bindings'), list) else []
+    matches: list[tuple[int, str, Optional[str]]] = []
+    for entry in bindings:
+        if not isinstance(entry, dict):
+            continue
+        alias = str(entry.get('alias') or '').strip()
+        if not alias:
+            continue
+
+        group_id = str(entry.get('group_id') or '').strip()
+        group_name = str(entry.get('group_name') or '').strip()
+        matched = False
+        if group_id and group_id in user_group_ids:
+            matched = True
+        if group_name and group_name in user_group_names:
+            matched = True
+        if not matched:
+            continue
+
+        priority = _to_int_value(entry.get('priority'), 0)
+        matches.append((priority, alias, group_id or None))
+
+    if not matches:
+        default_alias = str(provider_config.get('default_alias') or '').strip()
+        if default_alias:
+            return default_alias, None
+        raise _key_routing_error(
+            code=KEY_ROUTING_ERROR_NO_GROUP,
+            message=f'No key routing group matched for provider={provider}',
+        )
+
+    strict_single_group = bool(provider_config.get('strict_single_group', True))
+    aliases = sorted({alias for _, alias, _ in matches})
+    if strict_single_group and len(aliases) > 1:
+        raise _key_routing_error(
+            code=KEY_ROUTING_ERROR_MULTI_GROUP,
+            message=f'Multiple key routing groups matched for provider={provider}: {",".join(aliases)}',
+        )
+
+    matches.sort(key=lambda item: (-item[0], item[1]))
+    _, selected_alias, selected_group_id = matches[0]
+    return selected_alias, selected_group_id
+
+
+async def _resolve_provider_credential(
+    *,
+    provider: str,
+    user_id: str,
+    preferred_alias: Optional[str] = None,
+) -> dict[str, Optional[str]]:
+    normalized_provider = str(provider or '').strip().lower()
+    if not normalized_provider:
+        raise _key_routing_error(code=KEY_ROUTING_ERROR_RESOLVE_FAILED, message='Provider is required')
+
+    preferred_alias_value = str(preferred_alias or '').strip()
+    provider_config = _get_provider_key_routing_config(normalized_provider)
+
+    if provider_config is None:
+        # Backward compatibility: when routing config is absent, keep legacy env behavior.
+        legacy_api_key = _resolve_provider_legacy_api_key(normalized_provider)
+        if not legacy_api_key:
+            raise _key_routing_error(
+                code=KEY_ROUTING_ERROR_PROVIDER_NOT_CONFIGURED,
+                message=f'Provider key routing is not configured for provider={normalized_provider}',
+            )
+        return {
+            'provider': normalized_provider,
+            'credential_alias': 'legacy_env',
+            'routing_group_id': None,
+            'api_key': legacy_api_key,
+        }
+
+    credentials = provider_config.get('credentials') if isinstance(provider_config.get('credentials'), dict) else {}
+    if not credentials:
+        raise _key_routing_error(
+            code=KEY_ROUTING_ERROR_PROVIDER_NOT_CONFIGURED,
+            message=f'Provider credentials are not configured for provider={normalized_provider}',
+        )
+
+    routing_group_id: Optional[str] = None
+    if preferred_alias_value:
+        selected_alias = preferred_alias_value
+    else:
+        groups = await Groups.get_groups_by_member_id(str(user_id))
+        user_group_ids = {str(group.id) for group in groups if getattr(group, 'id', None)}
+        user_group_names = {str(group.name) for group in groups if getattr(group, 'name', None)}
+        selected_alias, routing_group_id = _resolve_key_routing_alias(
+            provider=normalized_provider,
+            provider_config=provider_config,
+            user_group_ids=user_group_ids,
+            user_group_names=user_group_names,
+        )
+
+    credential_conf = credentials.get(selected_alias)
+    env_name = ''
+    if isinstance(credential_conf, str):
+        env_name = credential_conf.strip()
+    elif isinstance(credential_conf, dict):
+        env_name = str(credential_conf.get('env') or '').strip()
+
+    if not env_name:
+        raise _key_routing_error(
+            code=KEY_ROUTING_ERROR_ALIAS_NOT_FOUND,
+            message=f'Credential alias is not configured for provider={normalized_provider}: {selected_alias}',
+        )
+
+    api_key = (os.getenv(env_name) or _read_env_value_from_file(env_name) or '').strip()
+    if not api_key:
+        raise _key_routing_error(
+            code=KEY_ROUTING_ERROR_ENV_MISSING,
+            message=f'Credential env is empty for provider={normalized_provider}, alias={selected_alias}, env={env_name}',
+        )
+
+    return {
+        'provider': normalized_provider,
+        'credential_alias': selected_alias,
+        'routing_group_id': routing_group_id,
+        'api_key': api_key,
+    }
+
+
+def _get_ark_headers(*, api_key: Optional[str] = None) -> dict[str, str]:
+    api_key = (api_key or os.getenv('ARK_API_KEY') or _read_env_value_from_file('ARK_API_KEY') or '').strip()
     if not api_key:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -665,6 +911,13 @@ def _normalize_task_defaults(task_record: dict[str, Any], *, owner_user_id: str)
         task_record['tool_name'] = 'material_packages.generate'
         changed = True
 
+    if 'credential_alias' not in task_record:
+        task_record['credential_alias'] = None
+        changed = True
+    if 'routing_group_id' not in task_record:
+        task_record['routing_group_id'] = None
+        changed = True
+
     artifact_kind = str(task_record.get('artifact_kind') or '').strip().lower()
     if artifact_kind not in TASK_ARTIFACT_KINDS:
         inferred_artifact_kind = TASK_ARTIFACT_KIND_VIDEO
@@ -807,9 +1060,33 @@ def _should_refresh_task_status(task_record: dict[str, Any], min_interval_second
     return (now - updated_at) >= max(0, int(min_interval_seconds))
 
 
-async def _query_generation_task_from_ark(task_id: str, timeout_seconds: int = 120) -> dict[str, Any]:
+async def _submit_generation_task_to_ark(
+    payload: dict[str, Any],
+    *,
+    timeout_seconds: int = 180,
+    api_key: Optional[str] = None,
+) -> dict[str, Any]:
     base_url = _get_ark_base_url()
-    headers = _get_ark_headers()
+    headers = _get_ark_headers(api_key=api_key)
+
+    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+        resp = await client.post(f'{base_url}/contents/generations/tasks', headers=headers, json=payload)
+    if resp.status_code >= 400:
+        raise HTTPException(
+            status_code=resp.status_code,
+            detail=f'Ark tasks.create failed: {resp.text}',
+        )
+    return resp.json()
+
+
+async def _query_generation_task_from_ark(
+    task_id: str,
+    *,
+    timeout_seconds: int = 120,
+    api_key: Optional[str] = None,
+) -> dict[str, Any]:
+    base_url = _get_ark_base_url()
+    headers = _get_ark_headers(api_key=api_key)
 
     async with httpx.AsyncClient(timeout=timeout_seconds) as client:
         resp = await client.get(f'{base_url}/contents/generations/tasks/{task_id}', headers=headers)
@@ -869,6 +1146,8 @@ async def _refresh_task_record_from_ark(
 
     provider = str(task_record.get('provider') or 'ark').strip().lower() or 'ark'
     provider_task_id = str(task_record.get('provider_task_id') or task_id).strip() or task_id
+    credential_alias = str(task_record.get('credential_alias') or '').strip() or None
+    routing_group_id = str(task_record.get('routing_group_id') or '').strip() or None
 
     try:
         if provider == 'happyhorse':
@@ -877,7 +1156,18 @@ async def _refresh_task_record_from_ark(
             image_urls = None
             primary_image_url = None
         elif provider in {'ark', ''}:
-            raw = await _query_generation_task_from_ark(provider_task_id, timeout_seconds=timeout_seconds)
+            resolved = await _resolve_provider_credential(
+                provider='seedance',
+                user_id=str(user_id),
+                preferred_alias=credential_alias,
+            )
+            raw = await _query_generation_task_from_ark(
+                provider_task_id,
+                timeout_seconds=timeout_seconds,
+                api_key=str(resolved.get('api_key') or ''),
+            )
+            credential_alias = str(resolved.get('credential_alias') or '').strip() or credential_alias
+            routing_group_id = str(resolved.get('routing_group_id') or '').strip() or routing_group_id
             artifact_kind = TASK_ARTIFACT_KIND_VIDEO
             image_urls = None
             primary_image_url = None
@@ -903,6 +1193,8 @@ async def _refresh_task_record_from_ark(
         artifact_kind=artifact_kind,
         image_urls=image_urls,
         primary_image_url=primary_image_url,
+        credential_alias=credential_alias,
+        routing_group_id=routing_group_id,
         raw_last_response=raw,
     )
     return refreshed
@@ -1230,6 +1522,8 @@ def _touch_task_record(
     error_code: Optional[str] = None,
     error_message: Optional[str] = None,
     request_id: Optional[str] = None,
+    credential_alias: Optional[str] = None,
+    routing_group_id: Optional[str] = None,
     raw_submit_response: Optional[dict[str, Any]] = None,
     raw_last_response: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
@@ -1294,6 +1588,10 @@ def _touch_task_record(
         current['error_message'] = str(error_message).strip() or None
     if request_id is not None:
         current['request_id'] = str(request_id).strip() or None
+    if credential_alias is not None:
+        current['credential_alias'] = str(credential_alias).strip() or None
+    if routing_group_id is not None:
+        current['routing_group_id'] = str(routing_group_id).strip() or None
     if raw_submit_response is not None:
         current['raw_submit_response'] = raw_submit_response
     if raw_last_response is not None:
@@ -1925,7 +2223,7 @@ def _extract_references(prompt: str) -> list[str]:
     refs = re.findall(r'@([^\s@,，。；;:：!！?？)）\]】}》>"“”\'`]+)', prompt)
     cleaned = []
     for ref in refs:
-        ref = ref.strip().rstrip('.,;:!?)\]}>"\'')
+        ref = ref.strip().rstrip('.,;:!?)]}>"\'')
         if ref:
             cleaned.append(ref)
     # dedupe while preserving order
@@ -2113,6 +2411,8 @@ def _to_generation_task_list_item(
         error_code=item.get('error_code'),
         error_message=item.get('error_message'),
         request_id=item.get('request_id'),
+        credential_alias=item.get('credential_alias'),
+        routing_group_id=item.get('routing_group_id'),
     )
 
 
@@ -2355,6 +2655,53 @@ async def get_material_package_assets(
         asset_package_id=str(manifest.get('id') or manifest.get('asset_package_id') or package_id),
         package_display_name=manifest.get('package_display_name') or manifest.get('source_filename') or manifest.get('zip_filename'),
         assets=rows,
+    )
+
+
+@router.post('/providers/ark/generations/tasks', response_model=ArkGenerationTaskProxyResponse)
+async def submit_ark_generation_task(
+    form_data: ArkGenerationTaskSubmitRequest,
+    user: UserModel = Depends(get_verified_user),
+):
+    if not form_data.content:
+        raise HTTPException(status_code=400, detail='content is required')
+
+    resolved = await _resolve_provider_credential(provider='seedance', user_id=str(user.id))
+    response_json = await _submit_generation_task_to_ark(
+        form_data.model_dump(exclude_none=True),
+        timeout_seconds=180,
+        api_key=str(resolved.get('api_key') or ''),
+    )
+    return ArkGenerationTaskProxyResponse(
+        provider='ark',
+        credential_alias=str(resolved.get('credential_alias') or '').strip() or None,
+        routing_group_id=str(resolved.get('routing_group_id') or '').strip() or None,
+        data=response_json,
+    )
+
+
+@router.get('/providers/ark/generations/tasks/{task_id}', response_model=ArkGenerationTaskProxyResponse)
+async def query_ark_generation_task(
+    task_id: str,
+    credential_alias: Optional[str] = Query(default=None),
+    timeout_seconds: int = Query(default=120, ge=5, le=300),
+    user: UserModel = Depends(get_verified_user),
+):
+    resolved = await _resolve_provider_credential(
+        provider='seedance',
+        user_id=str(user.id),
+        preferred_alias=credential_alias,
+    )
+    response_json = await _query_generation_task_from_ark(
+        _sanitize_task_id(task_id),
+        timeout_seconds=timeout_seconds,
+        api_key=str(resolved.get('api_key') or ''),
+    )
+    return ArkGenerationTaskProxyResponse(
+        provider='ark',
+        credential_alias=str(resolved.get('credential_alias') or '').strip() or None,
+        routing_group_id=str(resolved.get('routing_group_id') or '').strip() or None,
+        data=response_json,
     )
 
 
@@ -2638,9 +2985,6 @@ async def generate_with_material_package(
 
     cleaned_prompt = _clean_prompt(form_data.prompt, references)
 
-    base_url = _get_ark_base_url()
-    headers = _get_ark_headers()
-
     generation_skill = _generation_skill_from_model(form_data.model)
     if generation_skill in {GENERATION_SKILL_SEEDANCE, GENERATION_SKILL_HAPPYHORSE}:
         # Seedance/HappyHorse models use content generations tasks API and TOS URLs only.
@@ -2657,95 +3001,92 @@ async def generate_with_material_package(
         unresolved_references: list[dict[str, Any]] = []
         manifest_changed = False
 
-        async with httpx.AsyncClient(timeout=180) as client:
-            for idx, ref in enumerate(references):
-                item = assets_map[ref]
-                if generation_skill == GENERATION_SKILL_HAPPYHORSE and item.media_type != 'image':
-                    raise HTTPException(
-                        status_code=400,
-                        detail={
-                            'ok': False,
-                            'error_code': 'ModelConstraintViolation',
-                            'error_message': f'{form_data.model} only supports image references',
-                            'details': {
-                                'field': f'references[{idx}].media_type',
-                                'allowed': ['image'],
-                                'actual': item.media_type,
-                            },
-                        },
-                    )
-
-                file_url: Optional[str] = None
-                asset_raw = assets_raw_map.get(ref, {})
-                tos_url, changed = _ensure_tos_url_for_asset(
-                    tos_ctx,
-                    user_id=str(user.id),
-                    package_id=package_id,
-                    asset=asset_raw,
-                )
-                if changed:
-                    manifest_changed = True
-                if tos_url:
-                    file_url = tos_url
-
-                if not file_url:
-                    unresolved_references.append(
-                        {
-                            'reference': ref,
-                            'has_tos_config': bool(tos_ctx),
-                            'tos_key': assets_raw_map.get(ref, {}).get('tos_key'),
-                            'tos_status': assets_raw_map.get(ref, {}).get('tos_status'),
-                            'has_stored_file': bool(_asset_file_path_from_manifest_entry(user.id, package_id, assets_raw_map.get(ref, {}))),
-                        }
-                    )
-                    continue
-
-                generation_content.append(
-                    _build_generation_reference_block(
-                        model_skill=generation_skill,
-                        media_type=item.media_type,
-                        url=file_url,
-                    )
-                )
-
-            if manifest_changed:
-                manifest['updated_at'] = int(time.time())
-                _save_manifest(_manifest_path(user.id, package_id), manifest)
-
-            if unresolved_references:
+        for idx, ref in enumerate(references):
+            item = assets_map[ref]
+            if generation_skill == GENERATION_SKILL_HAPPYHORSE and item.media_type != 'image':
                 raise HTTPException(
                     status_code=400,
                     detail={
-                        'error': 'Unable to resolve TOS URL for some references',
-                        'unresolved_references': unresolved_references,
-                        'guidance': (
-                            'Generation now uses TOS only. '
-                            'Please check TOS credentials, bucket permission, and whether local stored files still exist for this package.'
-                        ),
+                        'ok': False,
+                        'error_code': 'ModelConstraintViolation',
+                        'error_message': f'{form_data.model} only supports image references',
+                        'details': {
+                            'field': f'references[{idx}].media_type',
+                            'allowed': ['image'],
+                            'actual': item.media_type,
+                        },
                     },
                 )
 
-            payload: dict[str, Any] = {
-                'model': form_data.model,
-                'content': generation_content,
-            }
-            if form_data.duration is not None:
-                payload['duration'] = form_data.duration
-            if form_data.ratio:
-                payload['ratio'] = form_data.ratio
-            if form_data.watermark is not None:
-                payload['watermark'] = form_data.watermark
-            if generation_skill == GENERATION_SKILL_SEEDANCE and form_data.generate_audio is not None:
-                payload['generate_audio'] = form_data.generate_audio
-
-            resp = await client.post(f'{base_url}/contents/generations/tasks', headers=headers, json=payload)
-
-        if resp.status_code >= 400:
-            raise HTTPException(
-                status_code=resp.status_code,
-                detail=f'Ark tasks.create failed: {resp.text}',
+            file_url: Optional[str] = None
+            asset_raw = assets_raw_map.get(ref, {})
+            tos_url, changed = _ensure_tos_url_for_asset(
+                tos_ctx,
+                user_id=str(user.id),
+                package_id=package_id,
+                asset=asset_raw,
             )
-        response_json = resp.json()
+            if changed:
+                manifest_changed = True
+            if tos_url:
+                file_url = tos_url
+
+            if not file_url:
+                unresolved_references.append(
+                    {
+                        'reference': ref,
+                        'has_tos_config': bool(tos_ctx),
+                        'tos_key': assets_raw_map.get(ref, {}).get('tos_key'),
+                        'tos_status': assets_raw_map.get(ref, {}).get('tos_status'),
+                        'has_stored_file': bool(_asset_file_path_from_manifest_entry(user.id, package_id, assets_raw_map.get(ref, {}))),
+                    }
+                )
+                continue
+
+            generation_content.append(
+                _build_generation_reference_block(
+                    model_skill=generation_skill,
+                    media_type=item.media_type,
+                    url=file_url,
+                )
+            )
+
+        if manifest_changed:
+            manifest['updated_at'] = int(time.time())
+            _save_manifest(_manifest_path(user.id, package_id), manifest)
+
+        if unresolved_references:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    'error': 'Unable to resolve TOS URL for some references',
+                    'unresolved_references': unresolved_references,
+                    'guidance': (
+                        'Generation now uses TOS only. '
+                        'Please check TOS credentials, bucket permission, and whether local stored files still exist for this package.'
+                    ),
+                },
+            )
+
+        payload: dict[str, Any] = {
+            'model': form_data.model,
+            'content': generation_content,
+        }
+        if form_data.duration is not None:
+            payload['duration'] = form_data.duration
+        if form_data.ratio:
+            payload['ratio'] = form_data.ratio
+        if form_data.watermark is not None:
+            payload['watermark'] = form_data.watermark
+        if generation_skill == GENERATION_SKILL_SEEDANCE and form_data.generate_audio is not None:
+            payload['generate_audio'] = form_data.generate_audio
+
+        resolved = await _resolve_provider_credential(provider='seedance', user_id=str(user.id))
+        response_json = await _submit_generation_task_to_ark(
+            payload,
+            timeout_seconds=180,
+            api_key=str(resolved.get('api_key') or ''),
+        )
 
         task_id = (
             response_json.get('task_id')
@@ -2773,6 +3114,8 @@ async def generate_with_material_package(
                 watermark=form_data.watermark,
                 generate_audio=form_data.generate_audio,
                 status=task_status,
+                credential_alias=str(resolved.get('credential_alias') or '').strip() or None,
+                routing_group_id=str(resolved.get('routing_group_id') or '').strip() or None,
                 raw_submit_response=response_json,
                 raw_last_response=response_json,
             )

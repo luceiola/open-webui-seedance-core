@@ -17,6 +17,8 @@
 		current: '',
 		latest: ''
 	};
+	let forkVersion = 'unknown';
+	let forkBuild = 'unknown';
 
 	const checkForVersionUpdates = async () => {
 		updateAvailable = null;
@@ -42,6 +44,9 @@
 			checkForVersionUpdates();
 		}
 	});
+
+	$: forkVersion = ($config?.fork_version ?? 'unknown').toString().trim() || 'unknown';
+	$: forkBuild = ($config?.fork_build ?? 'unknown').toString().trim() || 'unknown';
 </script>
 
 <div id="tab-about" class="flex flex-col h-full justify-between space-y-3 text-sm mb-6">
@@ -82,6 +87,11 @@
 					>
 						<div>{$i18n.t("See what's new")}</div>
 					</button>
+
+					<div class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+						<div>Fork v {forkVersion}</div>
+						<div>Fork build {forkBuild}</div>
+					</div>
 				</div>
 
 				{#if $config?.features?.enable_version_update_check}

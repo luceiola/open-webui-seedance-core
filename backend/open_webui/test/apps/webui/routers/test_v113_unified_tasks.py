@@ -1,5 +1,6 @@
 import asyncio
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
@@ -205,6 +206,15 @@ def _build_material_packages_router_fixture(tmp_path: Path):
 
     users_module.Users = _Users
 
+    groups_module = types.ModuleType('open_webui.models.groups')
+
+    class _Groups:
+        @staticmethod
+        async def get_groups_by_member_id(user_id, db=None):
+            return []
+
+    groups_module.Groups = _Groups
+
     storage_provider_module = types.ModuleType('open_webui.storage.provider')
 
     class _Storage:
@@ -224,6 +234,7 @@ def _build_material_packages_router_fixture(tmp_path: Path):
         'open_webui.utils': utils_pkg,
         'open_webui.config': config_module,
         'open_webui.models.files': files_module,
+        'open_webui.models.groups': groups_module,
         'open_webui.models.users': users_module,
         'open_webui.storage.provider': storage_provider_module,
         'open_webui.utils.auth': auth_module,
@@ -249,6 +260,13 @@ def material_packages_router_module(tmp_path):
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def _set_key_routing_config(material_module, config_path: Path):
+    material_module.KEY_ROUTING_CONFIG_PATH = config_path.resolve()
+    material_module._KEY_ROUTING_CACHE_PATH = None
+    material_module._KEY_ROUTING_CACHE_MTIME_NS = None
+    material_module._KEY_ROUTING_CACHE_DATA = {}
 
 
 def test_unified_tasks_list_contract_and_unknown_status_filter(tasks_router_module):
@@ -401,3 +419,196 @@ def test_happyhorse_generate_rejects_non_image_reference(material_packages_route
     assert isinstance(exc_info.value.detail, dict)
     assert exc_info.value.detail.get('error_code') == 'ModelConstraintViolation'
     assert exc_info.value.detail.get('details', {}).get('actual') == 'video'
+
+
+def test_key_routing_alias_raises_on_multi_group_conflict(material_packages_router_module):
+    material_module = material_packages_router_module
+    provider_config = {
+        'strict_single_group': True,
+        'bindings': [
+            {'group_id': 'g1', 'alias': 'k1', 'priority': 100},
+            {'group_id': 'g2', 'alias': 'k2', 'priority': 100},
+        ],
+    }
+
+    with pytest.raises(HTTPException) as exc_info:
+        material_module._resolve_key_routing_alias(
+            provider='seedance',
+            provider_config=provider_config,
+            user_group_ids={'g1', 'g2'},
+            user_group_names=set(),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert isinstance(exc_info.value.detail, dict)
+    assert exc_info.value.detail.get('code') == material_module.KEY_ROUTING_ERROR_MULTI_GROUP
+
+
+def test_key_routing_alias_uses_default_when_no_group_match(material_packages_router_module):
+    material_module = material_packages_router_module
+    provider_config = {
+        'strict_single_group': True,
+        'default_alias': 'k-default',
+        'bindings': [
+            {'group_id': 'g1', 'alias': 'k1'},
+        ],
+    }
+
+    alias, group_id = material_module._resolve_key_routing_alias(
+        provider='seedance',
+        provider_config=provider_config,
+        user_group_ids={'g-not-match'},
+        user_group_names=set(),
+    )
+
+    assert alias == 'k-default'
+    assert group_id is None
+
+
+def test_resolve_provider_credential_falls_back_to_legacy_env(
+    material_packages_router_module,
+    monkeypatch,
+    tmp_path,
+):
+    material_module = material_packages_router_module
+    _set_key_routing_config(material_module, tmp_path / 'missing-key-routing.json')
+
+    monkeypatch.setenv('ARK_API_KEY', 'legacy-seedance-key')
+
+    resolved = _run(
+        material_module._resolve_provider_credential(
+            provider='seedance',
+            user_id='user-1',
+        )
+    )
+
+    assert resolved['credential_alias'] == 'legacy_env'
+    assert resolved['routing_group_id'] is None
+    assert resolved['api_key'] == 'legacy-seedance-key'
+
+
+def test_resolve_provider_credential_raises_no_group_when_configured(
+    material_packages_router_module,
+    monkeypatch,
+    tmp_path,
+):
+    material_module = material_packages_router_module
+    config_path = tmp_path / 'key-routing.json'
+    config_path.write_text(
+        json.dumps(
+            {
+                'providers': {
+                    'seedance': {
+                        'strict_single_group': True,
+                        'default_alias': None,
+                        'credentials': {'k1': {'env': 'ARK_API_KEY_SEEDANCE_K1'}},
+                        'bindings': [{'group_id': 'g1', 'alias': 'k1'}],
+                    }
+                }
+            }
+        ),
+        encoding='utf-8',
+    )
+    _set_key_routing_config(material_module, config_path)
+    monkeypatch.delenv('ARK_API_KEY_SEEDANCE_K1', raising=False)
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run(
+            material_module._resolve_provider_credential(
+                provider='seedance',
+                user_id='user-1',
+            )
+        )
+
+    assert exc_info.value.status_code == 400
+    assert isinstance(exc_info.value.detail, dict)
+    assert exc_info.value.detail.get('code') == material_module.KEY_ROUTING_ERROR_NO_GROUP
+
+
+def test_resolve_provider_credential_raises_env_missing(
+    material_packages_router_module,
+    monkeypatch,
+    tmp_path,
+):
+    material_module = material_packages_router_module
+    config_path = tmp_path / 'key-routing.json'
+    config_path.write_text(
+        json.dumps(
+            {
+                'providers': {
+                    'seedance': {
+                        'strict_single_group': True,
+                        'default_alias': None,
+                        'credentials': {'k1': {'env': 'ARK_API_KEY_SEEDANCE_K1'}},
+                        'bindings': [{'group_id': 'g1', 'alias': 'k1'}],
+                    }
+                }
+            }
+        ),
+        encoding='utf-8',
+    )
+    _set_key_routing_config(material_module, config_path)
+    monkeypatch.delenv('ARK_API_KEY_SEEDANCE_K1', raising=False)
+
+    class _Groups:
+        @staticmethod
+        async def get_groups_by_member_id(user_id, db=None):
+            return [types.SimpleNamespace(id='g1', name='seedance-k1')]
+
+    material_module.Groups = _Groups
+
+    with pytest.raises(HTTPException) as exc_info:
+        _run(
+            material_module._resolve_provider_credential(
+                provider='seedance',
+                user_id='user-1',
+            )
+        )
+
+    assert exc_info.value.status_code == 400
+    assert isinstance(exc_info.value.detail, dict)
+    assert exc_info.value.detail.get('code') == material_module.KEY_ROUTING_ERROR_ENV_MISSING
+
+
+def test_resolve_provider_credential_returns_alias_and_group(
+    material_packages_router_module,
+    monkeypatch,
+    tmp_path,
+):
+    material_module = material_packages_router_module
+    config_path = tmp_path / 'key-routing.json'
+    config_path.write_text(
+        json.dumps(
+            {
+                'providers': {
+                    'seedance': {
+                        'strict_single_group': True,
+                        'default_alias': None,
+                        'credentials': {'k1': {'env': 'ARK_API_KEY_SEEDANCE_K1'}},
+                        'bindings': [{'group_id': 'g1', 'alias': 'k1'}],
+                    }
+                }
+            }
+        ),
+        encoding='utf-8',
+    )
+    _set_key_routing_config(material_module, config_path)
+    monkeypatch.setenv('ARK_API_KEY_SEEDANCE_K1', 'seedance-k1-secret')
+
+    class _Groups:
+        @staticmethod
+        async def get_groups_by_member_id(user_id, db=None):
+            return [types.SimpleNamespace(id='g1', name='seedance-k1')]
+
+    material_module.Groups = _Groups
+
+    resolved = _run(
+        material_module._resolve_provider_credential(
+            provider='seedance',
+            user_id='user-1',
+        )
+    )
+
+    assert resolved['credential_alias'] == 'k1'
+    assert resolved['routing_group_id'] == 'g1'
+    assert resolved['api_key'] == 'seedance-k1-secret'

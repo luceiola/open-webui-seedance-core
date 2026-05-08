@@ -179,6 +179,8 @@ class TaskBridgeUpsertForm(BaseModel):
     error_code: Optional[str] = None
     error_message: Optional[str] = None
     request_id: Optional[str] = None
+    credential_alias: Optional[str] = None
+    routing_group_id: Optional[str] = None
     raw_submit_response: Optional[dict[str, Any]] = None
     raw_last_response: Optional[dict[str, Any]] = None
 
@@ -1135,6 +1137,8 @@ async def upsert_task_bridge(form_data: TaskBridgeUpsertForm, user: UserModel = 
         error_code=form_data.error_code,
         error_message=form_data.error_message,
         request_id=request_id,
+        credential_alias=form_data.credential_alias,
+        routing_group_id=form_data.routing_group_id,
         raw_submit_response=raw_submit_response,
         raw_last_response=raw_last_response,
     )

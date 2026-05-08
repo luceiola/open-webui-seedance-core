@@ -255,6 +255,22 @@ ENABLE_EASTER_EGGS = os.environ.get('ENABLE_EASTER_EGGS', 'True').lower() == 'tr
 WEBUI_BUILD_HASH = os.environ.get('WEBUI_BUILD_HASH', 'dev-build')
 
 ####################################
+# Fork Version / Build
+####################################
+
+FORK_VERSION = (
+    os.environ.get('FORK_VERSION')
+    or os.environ.get('SEEDANCE_FORK_VERSION')
+    or 'unknown'
+).strip()
+
+FORK_BUILD = (
+    os.environ.get('FORK_BUILD')
+    or os.environ.get('SEEDANCE_FORK_BUILD')
+    or datetime.now().strftime('%Y%m%d_%H%M')
+).strip()
+
+####################################
 # DATA/FRONTEND BUILD DIR
 ####################################
 

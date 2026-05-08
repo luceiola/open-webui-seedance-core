@@ -505,6 +505,8 @@ from open_webui.env import (
     DEPLOYMENT_ID,
     INSTANCE_ID,
     WEBUI_BUILD_HASH,
+    FORK_VERSION,
+    FORK_BUILD,
     WEBUI_SECRET_KEY,
     WEBUI_SESSION_COOKIE_SAME_SITE,
     WEBUI_SESSION_COOKIE_SECURE,
@@ -2206,6 +2208,8 @@ async def get_app_config(request: Request):
         'status': True,
         'name': app.state.WEBUI_NAME,
         'version': VERSION,
+        'fork_version': FORK_VERSION,
+        'fork_build': FORK_BUILD,
         'default_locale': str(DEFAULT_LOCALE),
         'oauth': {'providers': {name: config.get('name', name) for name, config in OAUTH_PROVIDERS.items()}},
         'features': {
@@ -2361,6 +2365,8 @@ async def get_app_version():
     return {
         'version': VERSION,
         'deployment_id': DEPLOYMENT_ID,
+        'fork_version': FORK_VERSION,
+        'fork_build': FORK_BUILD,
     }
 
 
