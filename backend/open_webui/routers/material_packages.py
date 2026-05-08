@@ -39,6 +39,8 @@ MATERIAL_PACKAGES_DIR.mkdir(parents=True, exist_ok=True)
 
 ARK_ENV_FILE_CANDIDATES: list[Path] = [
     Path(os.getenv('ARK_ENV_FILE', '')).expanduser().resolve() if os.getenv('ARK_ENV_FILE') else None,
+    Path.cwd() / 'config' / 'happyhorse.env',
+    Path.cwd() / 'config' / 'ark.dev.env',
     Path.cwd() / 'config' / 'ark.env',
     Path.cwd() / '.env',
 ]
@@ -285,6 +287,25 @@ def _get_ark_headers() -> dict[str, str]:
     }
 
 
+def _get_dashscope_base_url() -> str:
+    base = (os.getenv('DASHSCOPE_BASE_URL') or _read_env_value_from_file('DASHSCOPE_BASE_URL') or 'https://dashscope.aliyuncs.com/api/v1').rstrip('/')
+    if '/api/' not in base:
+        base = f'{base}/api/v1'
+    return base
+
+
+def _get_dashscope_headers() -> dict[str, str]:
+    api_key = (os.getenv('DASHSCOPE_API_KEY') or _read_env_value_from_file('DASHSCOPE_API_KEY') or '').strip()
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='DASHSCOPE_API_KEY is not configured',
+        )
+    return {
+        'Authorization': f'Bearer {api_key}',
+    }
+
+
 def _manifest_path(user_id: str, package_id: str) -> Path:
     user_dir = MATERIAL_PACKAGES_DIR / user_id
     user_dir.mkdir(parents=True, exist_ok=True)
@@ -319,13 +340,54 @@ def _load_task_record(user_id: str, task_id: str) -> Optional[dict[str, Any]]:
         return None
 
 
+def _find_user_task_record_by_provider_task_id(
+    *,
+    user_id: str,
+    provider: str,
+    provider_task_id: str,
+) -> Optional[tuple[str, dict[str, Any]]]:
+    provider_value = str(provider or '').strip().lower()
+    provider_task_value = str(provider_task_id or '').strip()
+    if not provider_value or not provider_task_value:
+        return None
+
+    tasks_dir = _tasks_dir(user_id)
+    if not tasks_dir.exists():
+        return None
+
+    for path in tasks_dir.glob('*.json'):
+        data = _load_task_record_from_path(path)
+        if data is None:
+            continue
+
+        current_provider = str(data.get('provider') or '').strip().lower()
+        current_provider_task_id = str(data.get('provider_task_id') or '').strip()
+        if current_provider == provider_value and current_provider_task_id == provider_task_value:
+            return path.stem, data
+    return None
+
+
 def _save_task_record(user_id: str, task_id: str, data: dict[str, Any]) -> None:
     path = _task_record_path(user_id, task_id)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
 
 
 def _extract_task_status(data: dict[str, Any]) -> Optional[str]:
-    return data.get('status') or (data.get('data') or {}).get('status')
+    if not isinstance(data, dict):
+        return None
+    nested_data = data.get('data') if isinstance(data.get('data'), dict) else {}
+    nested_output = data.get('output') if isinstance(data.get('output'), dict) else {}
+    nested_task = data.get('task') if isinstance(data.get('task'), dict) else {}
+    return (
+        data.get('status')
+        or data.get('task_status')
+        or nested_data.get('status')
+        or nested_data.get('task_status')
+        or nested_output.get('status')
+        or nested_output.get('task_status')
+        or nested_task.get('status')
+        or nested_task.get('task_status')
+    )
 
 
 TERMINAL_TASK_STATUSES: set[str] = {
@@ -340,6 +402,13 @@ TERMINAL_TASK_STATUSES: set[str] = {
 GENERATION_SKILL_SEEDANCE = 'seedance'
 GENERATION_SKILL_HAPPYHORSE = 'happyhorse'
 GENERATION_SKILL_UNKNOWN = 'unknown'
+
+TASK_ARTIFACT_KIND_VIDEO = 'video'
+TASK_ARTIFACT_KIND_IMAGE = 'image'
+TASK_ARTIFACT_KINDS: set[str] = {
+    TASK_ARTIFACT_KIND_VIDEO,
+    TASK_ARTIFACT_KIND_IMAGE,
+}
 
 ARCHIVE_STATUS_NOT_REQUIRED = 'NOT_REQUIRED'
 ARCHIVE_STATUS_PENDING = 'PENDING'
@@ -494,6 +563,36 @@ def _sync_task_serving_fields(user_id: str, task_record: dict[str, Any]) -> bool
     if not task_id:
         return changed
 
+    artifact_kind = str(task_record.get('artifact_kind') or '').strip().lower()
+    if artifact_kind == TASK_ARTIFACT_KIND_IMAGE:
+        image_urls = task_record.get('image_urls')
+        image_candidates = image_urls if isinstance(image_urls, list) else []
+        image_candidates = [str(v or '').strip() for v in image_candidates if str(v or '').strip()]
+        primary_image_url = str(task_record.get('primary_image_url') or '').strip()
+        if not primary_image_url and image_candidates:
+            primary_image_url = image_candidates[0]
+            task_record['primary_image_url'] = primary_image_url
+            changed = True
+
+        if task_record.get('download_ready') != False:
+            task_record['download_ready'] = False
+            changed = True
+
+        if task_record.get('video_download_url') is not None:
+            task_record['video_download_url'] = None
+            changed = True
+
+        if task_record.get('video_preview_url') is not None:
+            task_record['video_preview_url'] = None
+            changed = True
+
+        next_thumb_url = primary_image_url or None
+        if task_record.get('thumbnail_url') != next_thumb_url:
+            task_record['thumbnail_url'] = next_thumb_url
+            changed = True
+
+        return changed
+
     video_path = _task_file_from_relative(user_id, task_record.get('archived_video_path'))
     thumb_path = _task_file_from_relative(user_id, task_record.get('thumbnail_path'))
 
@@ -559,15 +658,57 @@ def _normalize_task_defaults(task_record: dict[str, Any], *, owner_user_id: str)
         task_record['tool_name'] = 'material_packages.generate'
         changed = True
 
+    artifact_kind = str(task_record.get('artifact_kind') or '').strip().lower()
+    if artifact_kind not in TASK_ARTIFACT_KINDS:
+        inferred_artifact_kind = TASK_ARTIFACT_KIND_VIDEO
+        if task_record.get('primary_image_url') or task_record.get('image_urls'):
+            inferred_artifact_kind = TASK_ARTIFACT_KIND_IMAGE
+        task_record['artifact_kind'] = inferred_artifact_kind
+        artifact_kind = inferred_artifact_kind
+        changed = True
+
     if task_record.get('progress') is None:
         task_record['progress'] = None
         changed = True
 
+    image_urls = task_record.get('image_urls')
+    if image_urls is None:
+        task_record['image_urls'] = []
+        image_urls = task_record['image_urls']
+        changed = True
+    elif not isinstance(image_urls, list):
+        task_record['image_urls'] = [str(image_urls)]
+        image_urls = task_record['image_urls']
+        changed = True
+
+    normalized_image_urls: list[str] = []
+    for value in image_urls:
+        candidate = str(value or '').strip()
+        if candidate.startswith(('http://', 'https://')):
+            normalized_image_urls.append(candidate)
+    deduped_image_urls = list(dict.fromkeys(normalized_image_urls))
+    if deduped_image_urls != image_urls:
+        task_record['image_urls'] = deduped_image_urls
+        changed = True
+
+    primary_image_url = str(task_record.get('primary_image_url') or '').strip()
+    if not primary_image_url and deduped_image_urls:
+        task_record['primary_image_url'] = deduped_image_urls[0]
+        changed = True
+    elif primary_image_url and not primary_image_url.startswith(('http://', 'https://')):
+        task_record['primary_image_url'] = deduped_image_urls[0] if deduped_image_urls else None
+        changed = True
+
     if _is_succeeded_task_status(status_value):
-        desired_archive = str(task_record.get('archive_status') or '').strip().upper()
-        if not desired_archive:
-            task_record['archive_status'] = ARCHIVE_STATUS_PENDING
-            changed = True
+        if artifact_kind == TASK_ARTIFACT_KIND_IMAGE:
+            if task_record.get('archive_status') != ARCHIVE_STATUS_NOT_REQUIRED:
+                task_record['archive_status'] = ARCHIVE_STATUS_NOT_REQUIRED
+                changed = True
+        else:
+            desired_archive = str(task_record.get('archive_status') or '').strip().upper()
+            if not desired_archive:
+                task_record['archive_status'] = ARCHIVE_STATUS_PENDING
+                changed = True
     else:
         if str(task_record.get('archive_status') or '').strip().upper() not in TASK_ARCHIVE_FINAL_STATUSES:
             if task_record.get('archive_status') != ARCHIVE_STATUS_NOT_REQUIRED:
@@ -682,6 +823,33 @@ async def _query_generation_task_from_ark(task_id: str, timeout_seconds: int = 1
         return resp.json()
 
 
+async def _query_generation_task_from_happyhorse(task_id: str, timeout_seconds: int = 120) -> dict[str, Any]:
+    base_url = _get_dashscope_base_url()
+    headers = _get_dashscope_headers()
+
+    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+        resp = await client.get(f'{base_url}/tasks/{task_id}', headers=headers)
+        if resp.status_code >= 400:
+            raise HTTPException(
+                status_code=resp.status_code,
+                detail=f'HappyHorse task query failed: {resp.text}',
+            )
+        return resp.json()
+
+
+def _query_generation_task_from_gpt_image2_local(user_id: str, task_id: str) -> dict[str, Any]:
+    raw_store_dir = os.getenv('GPT_IMAGE2_TASK_STORE_DIR') or '.data-dev/gpt_image2_tasks'
+    store_dir = Path(raw_store_dir).expanduser()
+    safe_task_id = _sanitize_task_id(task_id)
+    task_file = store_dir / str(user_id) / f'{safe_task_id}.json'
+    if not task_file.exists() or not task_file.is_file():
+        raise HTTPException(status_code=404, detail='GPT-Image-2 local task not found')
+    try:
+        return json.loads(task_file.read_text(encoding='utf-8'))
+    except Exception:
+        raise HTTPException(status_code=500, detail='Failed to read GPT-Image-2 local task record')
+
+
 async def _refresh_task_record_from_ark(
     user_id: str,
     task_record: dict[str, Any],
@@ -692,19 +860,42 @@ async def _refresh_task_record_from_ark(
     if not task_id:
         return task_record
 
+    provider = str(task_record.get('provider') or 'ark').strip().lower() or 'ark'
+    provider_task_id = str(task_record.get('provider_task_id') or task_id).strip() or task_id
+
     try:
-        raw = await _query_generation_task_from_ark(task_id, timeout_seconds=timeout_seconds)
+        if provider == 'happyhorse':
+            raw = await _query_generation_task_from_happyhorse(provider_task_id, timeout_seconds=timeout_seconds)
+            artifact_kind = TASK_ARTIFACT_KIND_VIDEO
+            image_urls = None
+            primary_image_url = None
+        elif provider in {'ark', ''}:
+            raw = await _query_generation_task_from_ark(provider_task_id, timeout_seconds=timeout_seconds)
+            artifact_kind = TASK_ARTIFACT_KIND_VIDEO
+            image_urls = None
+            primary_image_url = None
+        elif provider in {'openai_image2', 'gpt_image2'}:
+            raw = _query_generation_task_from_gpt_image2_local(user_id, provider_task_id)
+            extracted = _extract_image_urls(raw)
+            artifact_kind = TASK_ARTIFACT_KIND_IMAGE
+            image_urls = extracted
+            primary_image_url = extracted[0] if extracted else None
+        else:
+            return task_record
     except HTTPException as exc:
-        log.warning('Refresh task status failed for %s: %s', task_id, exc.detail)
+        log.warning('Refresh task status failed for %s(%s): %s', task_id, provider, exc.detail)
         return task_record
     except Exception:
-        log.exception('Refresh task status crashed for %s', task_id)
+        log.exception('Refresh task status crashed for %s(%s)', task_id, provider)
         return task_record
 
     refreshed = _touch_task_record(
         user_id,
         task_id,
         status=_extract_task_status(raw),
+        artifact_kind=artifact_kind,
+        image_urls=image_urls,
+        primary_image_url=primary_image_url,
         raw_last_response=raw,
     )
     return refreshed
@@ -743,6 +934,36 @@ def _find_first_video_url(payload: Any) -> Optional[str]:
     return None
 
 
+def _extract_image_urls(payload: Any) -> list[str]:
+    collected: list[str] = []
+
+    def _collect(node: Any) -> None:
+        if isinstance(node, dict):
+            for key in ('image_url', 'url'):
+                value = str(node.get(key) or '').strip()
+                if value.startswith(('http://', 'https://')):
+                    collected.append(value)
+
+            for key in ('image_urls', 'urls'):
+                values = node.get(key)
+                if isinstance(values, list):
+                    for value in values:
+                        candidate = str(value or '').strip()
+                        if candidate.startswith(('http://', 'https://')):
+                            collected.append(candidate)
+
+            for value in node.values():
+                _collect(value)
+            return
+
+        if isinstance(node, list):
+            for item in node:
+                _collect(item)
+
+    _collect(payload)
+    return list(dict.fromkeys(collected))
+
+
 def _extract_error_info(payload: Any) -> dict[str, Optional[str]]:
     if not isinstance(payload, dict):
         return {
@@ -758,6 +979,7 @@ def _extract_error_info(payload: Any) -> dict[str, Optional[str]]:
     for candidate in (
         payload.get('error'),
         (payload.get('data') or {}).get('error') if isinstance(payload.get('data'), dict) else None,
+        payload.get('output') if isinstance(payload.get('output'), dict) else None,
     ):
         if isinstance(candidate, dict):
             error_code = error_code or candidate.get('code')
@@ -841,6 +1063,17 @@ async def _archive_task_record_if_needed(
     if task_record.get('status') != status_value:
         task_record['status'] = status_value
         changed = True
+
+    if str(task_record.get('artifact_kind') or '').strip().lower() == TASK_ARTIFACT_KIND_IMAGE:
+        if str(task_record.get('archive_status') or '').strip().upper() != ARCHIVE_STATUS_NOT_REQUIRED:
+            task_record['archive_status'] = ARCHIVE_STATUS_NOT_REQUIRED
+            changed = True
+        if _sync_task_serving_fields(owner_user_id, task_record):
+            changed = True
+        if changed:
+            task_record['archive_updated_at'] = now
+            _save_task_record(owner_user_id, task_id, task_record)
+        return task_record
 
     if not _is_succeeded_task_status(status_value):
         if str(task_record.get('archive_status') or '').strip().upper() not in TASK_ARCHIVE_FINAL_STATUSES:
@@ -983,6 +1216,13 @@ def _touch_task_record(
     watermark: Optional[bool] = None,
     generate_audio: Optional[bool] = None,
     status: Optional[str] = None,
+    artifact_kind: Optional[str] = None,
+    image_urls: Optional[list[str]] = None,
+    primary_image_url: Optional[str] = None,
+    video_url: Optional[str] = None,
+    error_code: Optional[str] = None,
+    error_message: Optional[str] = None,
+    request_id: Optional[str] = None,
     raw_submit_response: Optional[dict[str, Any]] = None,
     raw_last_response: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
@@ -1033,6 +1273,20 @@ def _touch_task_record(
         current['generate_audio'] = generate_audio
     if status is not None:
         current['status'] = _normalize_task_status(status)
+    if artifact_kind is not None:
+        current['artifact_kind'] = str(artifact_kind).strip().lower()
+    if image_urls is not None:
+        current['image_urls'] = list(image_urls)
+    if primary_image_url is not None:
+        current['primary_image_url'] = str(primary_image_url).strip() or None
+    if video_url is not None:
+        current['video_url'] = str(video_url).strip() or None
+    if error_code is not None:
+        current['error_code'] = str(error_code).strip() or None
+    if error_message is not None:
+        current['error_message'] = str(error_message).strip() or None
+    if request_id is not None:
+        current['request_id'] = str(request_id).strip() or None
     if raw_submit_response is not None:
         current['raw_submit_response'] = raw_submit_response
     if raw_last_response is not None:
@@ -1048,6 +1302,13 @@ def _touch_task_record(
         video_url = _find_first_video_url(raw_last_response)
         if video_url:
             current['video_url'] = video_url
+
+        image_urls_from_payload = _extract_image_urls(raw_last_response)
+        if image_urls_from_payload:
+            current['image_urls'] = image_urls_from_payload
+            current['primary_image_url'] = image_urls_from_payload[0]
+            if str(current.get('artifact_kind') or '').strip().lower() not in TASK_ARTIFACT_KINDS:
+                current['artifact_kind'] = TASK_ARTIFACT_KIND_IMAGE
 
         err = _extract_error_info(raw_last_response)
         if err.get('error_code'):

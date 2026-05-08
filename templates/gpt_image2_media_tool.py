@@ -240,6 +240,60 @@ class Tools:
 
         return {"ok": True, "status_code": response.status_code, "data": payload}
 
+    async def _bridge_upsert_task(
+        self,
+        *,
+        task_id: str,
+        status: str = "",
+        model: str = "",
+        chat_id: str = "",
+        references: Optional[list[str]] = None,
+        raw_submit_response: Optional[dict[str, Any]] = None,
+        raw_last_response: Optional[dict[str, Any]] = None,
+        image_urls: Optional[list[str]] = None,
+        primary_image_url: Optional[str] = None,
+        request_id: Optional[str] = None,
+        error_code: Optional[str] = None,
+        error_message: Optional[str] = None,
+        __request__: Optional[Request] = None,
+    ) -> bool:
+        tid = (task_id or "").strip()
+        if not tid:
+            return False
+
+        payload: dict[str, Any] = {
+            "task_id": tid,
+            "provider": "openai_image2",
+            "provider_task_id": tid,
+            "tool_name": "gpt_image2_media_tool.generate_image_with_media_assets",
+            "skill_name": "gpt-image2",
+            "status": (status or "").strip() or "PENDING",
+            "artifact_kind": "image",
+        }
+        if model:
+            payload["model"] = model
+        if chat_id:
+            payload["chat_id"] = chat_id
+        if references:
+            payload["references"] = references
+        if raw_submit_response is not None:
+            payload["raw_submit_response"] = raw_submit_response
+        if raw_last_response is not None:
+            payload["raw_last_response"] = raw_last_response
+        if image_urls is not None:
+            payload["image_urls"] = list(image_urls)
+        if primary_image_url:
+            payload["primary_image_url"] = primary_image_url
+        if request_id:
+            payload["request_id"] = request_id
+        if error_code:
+            payload["error_code"] = error_code
+        if error_message:
+            payload["error_message"] = error_message
+
+        bridge = await self._request("POST", "/api/v1/tasks/bridge/upsert", __request__, payload)
+        return bool(bridge.get("ok"))
+
     async def _download_binary(self, url: str, headers: Optional[dict[str, str]] = None) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=self.valves.REQUEST_TIMEOUT_SECONDS, trust_env=False, follow_redirects=True) as client:
             resp = await client.get(url, headers=headers)
@@ -1373,6 +1427,19 @@ class Tools:
             "raw_response": None,
         }
         self._save_task_record(user_id=user_id, task_id=task_id, payload=initial_record)
+        try:
+            await self._bridge_upsert_task(
+                task_id=task_id,
+                status="PENDING",
+                model=model_id,
+                chat_id=chat_id,
+                references=refs,
+                raw_submit_response=initial_record,
+                raw_last_response=initial_record,
+                __request__=__request__,
+            )
+        except Exception:
+            pass
 
         resolved_assets = [item for item in (resolve_data.get("assets") or []) if isinstance(item, dict)]
         character_mapping: list[dict[str, Any]] = []

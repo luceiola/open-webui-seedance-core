@@ -454,6 +454,13 @@
 						playsinline
 						preload="metadata"
 					></video>
+				{:else if selectedTask.thumbnail_url}
+					<img
+						class="w-full max-h-[72vh] object-contain"
+						src={toAssetUrl(selectedTask.thumbnail_url)}
+						alt={`task-preview-${selectedTask.task_id}`}
+						loading="lazy"
+					/>
 				{:else}
 					<div class="w-full h-[40vh] flex items-center justify-center text-sm text-gray-400">
 						暂无可预览视频

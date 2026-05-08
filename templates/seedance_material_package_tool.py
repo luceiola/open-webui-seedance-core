@@ -535,6 +535,57 @@ class Tools:
 
         return {"ok": True, "status_code": response.status_code, "data": payload}
 
+    async def _bridge_upsert_task(
+        self,
+        *,
+        task_id: str,
+        status: str = "",
+        model: str = "",
+        chat_id: str = "",
+        references: Optional[list[str]] = None,
+        raw_submit_response: Optional[dict[str, Any]] = None,
+        raw_last_response: Optional[dict[str, Any]] = None,
+        video_url: Optional[str] = None,
+        request_id: Optional[str] = None,
+        error_code: Optional[str] = None,
+        error_message: Optional[str] = None,
+        __request__: Optional[Request] = None,
+    ) -> bool:
+        tid = (task_id or "").strip()
+        if not tid:
+            return False
+
+        payload: dict[str, Any] = {
+            "task_id": tid,
+            "provider": "ark",
+            "provider_task_id": tid,
+            "tool_name": "seedance_material_package_tool.generate_video_with_media_assets",
+            "skill_name": "seedance",
+            "status": (status or "").strip() or "PENDING",
+            "artifact_kind": "video",
+        }
+        if model:
+            payload["model"] = model
+        if chat_id:
+            payload["chat_id"] = chat_id
+        if references:
+            payload["references"] = references
+        if raw_submit_response is not None:
+            payload["raw_submit_response"] = raw_submit_response
+        if raw_last_response is not None:
+            payload["raw_last_response"] = raw_last_response
+        if video_url:
+            payload["video_url"] = video_url
+        if request_id:
+            payload["request_id"] = request_id
+        if error_code:
+            payload["error_code"] = error_code
+        if error_message:
+            payload["error_message"] = error_message
+
+        bridge = await self._request("POST", "/api/v1/tasks/bridge/upsert", __request__, payload)
+        return bool(bridge.get("ok"))
+
     async def list_material_packages(self, __request__: Request = None, __user__: dict = None) -> str:
         """
         列出当前用户可用素材包，返回包 ID、包名、来源类型、可引用素材名。
@@ -1290,6 +1341,19 @@ class Tools:
         task_status = response_json.get("status") or (response_json.get("data") or {}).get("status") or "submitted"
 
         if task_id:
+            try:
+                await self._bridge_upsert_task(
+                    task_id=str(task_id),
+                    status=str(task_status),
+                    model=model_id,
+                    chat_id=chat_id,
+                    references=refs,
+                    raw_submit_response=response_json,
+                    raw_last_response=response_json,
+                    __request__=__request__,
+                )
+            except Exception:
+                pass
             try:
                 await self.get_generation_task_status(task_id=task_id, __request__=__request__, __user__=__user__)
             except Exception:

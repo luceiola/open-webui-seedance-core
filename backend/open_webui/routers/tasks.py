@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Any, Optional
 import mimetypes
 import logging
@@ -155,6 +155,45 @@ class UnifiedTaskPreviewResponse(BaseModel):
     video_preview_url: Optional[str] = None
 
 
+class TaskBridgeUpsertForm(BaseModel):
+    task_id: Optional[str] = None
+    provider: str = 'ark'
+    provider_task_id: Optional[str] = None
+    tool_name: Optional[str] = None
+    skill_name: Optional[str] = None
+    package_id: Optional[str] = None
+    chat_id: Optional[str] = None
+    model: Optional[str] = None
+    references: list[str] = Field(default_factory=list)
+    status: Optional[str] = None
+    progress: Optional[float] = None
+    finished_at: Optional[int] = None
+    duration: Optional[int] = None
+    ratio: Optional[str] = None
+    watermark: Optional[bool] = None
+    generate_audio: Optional[bool] = None
+    artifact_kind: Optional[str] = None
+    image_urls: Optional[list[str]] = None
+    primary_image_url: Optional[str] = None
+    video_url: Optional[str] = None
+    error_code: Optional[str] = None
+    error_message: Optional[str] = None
+    request_id: Optional[str] = None
+    raw_submit_response: Optional[dict[str, Any]] = None
+    raw_last_response: Optional[dict[str, Any]] = None
+
+
+class TaskBridgeUpsertResponse(BaseModel):
+    ok: bool = True
+    task_id: str
+    provider: str
+    provider_task_id: str
+    status: str
+    archive_status: str
+    download_ready: bool
+    updated_at: int
+
+
 def _normalize_unified_status(raw_status: Optional[str]) -> str:
     value = str(raw_status or '').strip().upper()
     if not value:
@@ -184,6 +223,59 @@ def _normalize_archive_status(raw_status: Optional[str]) -> str:
     if value in UNIFIED_TASK_ARCHIVE_STATUSES:
         return value
     return 'NOT_REQUIRED'
+
+
+def _normalize_task_bridge_provider(provider: Optional[str]) -> str:
+    value = str(provider or '').strip().lower()
+    return value or 'ark'
+
+
+def _normalize_task_bridge_artifact_kind(value: Optional[str]) -> Optional[str]:
+    kind = str(value or '').strip().lower()
+    if kind in {'video', 'image'}:
+        return kind
+    return None
+
+
+def _extract_bridge_status_candidate(payload: Optional[dict[str, Any]]) -> Optional[str]:
+    if not isinstance(payload, dict):
+        return None
+    nested_data = payload.get('data') if isinstance(payload.get('data'), dict) else {}
+    nested_output = payload.get('output') if isinstance(payload.get('output'), dict) else {}
+    nested_task = payload.get('task') if isinstance(payload.get('task'), dict) else {}
+    for value in (
+        payload.get('status'),
+        payload.get('task_status'),
+        nested_data.get('status'),
+        nested_data.get('task_status'),
+        nested_output.get('status'),
+        nested_output.get('task_status'),
+        nested_task.get('status'),
+        nested_task.get('task_status'),
+    ):
+        text = str(value or '').strip()
+        if text:
+            return text
+    return None
+
+
+def _merge_bridge_status(existing_status: Optional[str], incoming_status: Optional[str]) -> str:
+    existing = _normalize_unified_status(existing_status) if existing_status else 'PENDING'
+    if not incoming_status:
+        return existing
+    incoming = _normalize_unified_status(incoming_status)
+
+    if existing in UNIFIED_TASK_TERMINAL_STATUSES:
+        if incoming not in UNIFIED_TASK_TERMINAL_STATUSES:
+            return existing
+        if existing == 'SUCCEEDED' or incoming == 'SUCCEEDED':
+            return 'SUCCEEDED'
+        return incoming
+
+    if existing == 'RUNNING' and incoming == 'PENDING':
+        return existing
+
+    return incoming
 
 
 def _provider_cancel_supported(provider: str) -> bool:
@@ -971,6 +1063,104 @@ async def generate_moa_response(request: Request, form_data: dict, user=Depends(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={'detail': str(e)},
         )
+
+
+@router.post('/bridge/upsert', response_model=TaskBridgeUpsertResponse)
+async def upsert_task_bridge(form_data: TaskBridgeUpsertForm, user: UserModel = Depends(get_verified_user)):
+    owner_user_id = str(user.id)
+    owner_user_name = str(getattr(user, 'name', None) or getattr(user, 'username', None) or owner_user_id)
+
+    provider = _normalize_task_bridge_provider(form_data.provider)
+    requested_task_id = str(form_data.task_id or '').strip()
+    provider_task_id = str(form_data.provider_task_id or requested_task_id).strip()
+    if not requested_task_id and not provider_task_id:
+        raise HTTPException(status_code=400, detail='task_id or provider_task_id is required')
+
+    existing_task_id: Optional[str] = None
+    existing_record: Optional[dict[str, Any]] = None
+    if provider_task_id:
+        found = material_packages_router._find_user_task_record_by_provider_task_id(
+            user_id=owner_user_id,
+            provider=provider,
+            provider_task_id=provider_task_id,
+        )
+        if found:
+            existing_task_id, existing_record = found
+
+    canonical_task_id = str(existing_task_id or requested_task_id or provider_task_id).strip()
+    if not canonical_task_id:
+        raise HTTPException(status_code=400, detail='Unable to resolve task_id')
+    canonical_task_id = material_packages_router._sanitize_task_id(canonical_task_id)
+    provider_task_id = provider_task_id or canonical_task_id
+
+    existing_record = existing_record or material_packages_router._load_task_record(owner_user_id, canonical_task_id) or {}
+    incoming_status = (
+        form_data.status
+        or _extract_bridge_status_candidate(form_data.raw_last_response)
+        or _extract_bridge_status_candidate(form_data.raw_submit_response)
+    )
+    merged_status = _merge_bridge_status(existing_record.get('status'), incoming_status)
+
+    artifact_kind = _normalize_task_bridge_artifact_kind(form_data.artifact_kind)
+    raw_submit_response = form_data.raw_submit_response if isinstance(form_data.raw_submit_response, dict) else None
+    raw_last_response = form_data.raw_last_response if isinstance(form_data.raw_last_response, dict) else None
+    request_id = form_data.request_id
+    if not request_id:
+        request_id = str((raw_last_response or {}).get('request_id') or (raw_submit_response or {}).get('request_id') or '').strip() or None
+
+    references = form_data.references if form_data.references else None
+    row = material_packages_router._touch_task_record(
+        owner_user_id,
+        canonical_task_id,
+        user_name=owner_user_name,
+        provider=provider,
+        provider_task_id=provider_task_id,
+        tool_name=form_data.tool_name,
+        skill_name=form_data.skill_name,
+        package_id=form_data.package_id,
+        chat_id=form_data.chat_id,
+        model=form_data.model,
+        references=references,
+        progress=form_data.progress,
+        finished_at=form_data.finished_at,
+        duration=form_data.duration,
+        ratio=form_data.ratio,
+        watermark=form_data.watermark,
+        generate_audio=form_data.generate_audio,
+        status=merged_status,
+        artifact_kind=artifact_kind,
+        image_urls=form_data.image_urls,
+        primary_image_url=form_data.primary_image_url,
+        video_url=form_data.video_url,
+        error_code=form_data.error_code,
+        error_message=form_data.error_message,
+        request_id=request_id,
+        raw_submit_response=raw_submit_response,
+        raw_last_response=raw_last_response,
+    )
+
+    # Ensure terminal/non-terminal merge policy wins even when provider payload carries stale status.
+    if _normalize_unified_status(row.get('status')) != merged_status:
+        row = material_packages_router._touch_task_record(
+            owner_user_id,
+            canonical_task_id,
+            status=merged_status,
+        )
+
+    artifact_value = str(row.get('artifact_kind') or '').strip().lower()
+    status_value = _normalize_unified_status(row.get('status'))
+    if artifact_value != 'image' and status_value in {'PENDING', 'RUNNING', 'SUCCEEDED'}:
+        material_packages_router._spawn_task_archive_poller(owner_user_id, canonical_task_id)
+
+    return TaskBridgeUpsertResponse(
+        task_id=canonical_task_id,
+        provider=provider,
+        provider_task_id=str(row.get('provider_task_id') or provider_task_id),
+        status=_normalize_unified_status(row.get('status')),
+        archive_status=_normalize_archive_status(row.get('archive_status')),
+        download_ready=bool(row.get('download_ready')),
+        updated_at=int(row.get('updated_at') or int(time.time())),
+    )
 
 
 @router.get('/', response_model=UnifiedTaskListResponse)

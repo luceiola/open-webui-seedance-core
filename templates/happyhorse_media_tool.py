@@ -210,6 +210,57 @@ class Tools:
 
         return {"ok": True, "status_code": response.status_code, "data": payload}
 
+    async def _bridge_upsert_task(
+        self,
+        *,
+        task_id: str,
+        status: str = "",
+        model: str = "",
+        chat_id: str = "",
+        references: Optional[list[str]] = None,
+        raw_submit_response: Optional[dict[str, Any]] = None,
+        raw_last_response: Optional[dict[str, Any]] = None,
+        video_url: Optional[str] = None,
+        request_id: Optional[str] = None,
+        error_code: Optional[str] = None,
+        error_message: Optional[str] = None,
+        __request__: Optional[Request] = None,
+    ) -> bool:
+        tid = (task_id or "").strip()
+        if not tid:
+            return False
+
+        payload: dict[str, Any] = {
+            "task_id": tid,
+            "provider": "happyhorse",
+            "provider_task_id": tid,
+            "tool_name": "happyhorse_media_tool.generate_video_with_happyhorse",
+            "skill_name": "happyhorse",
+            "status": (status or "").strip() or "PENDING",
+            "artifact_kind": "video",
+        }
+        if model:
+            payload["model"] = model
+        if chat_id:
+            payload["chat_id"] = chat_id
+        if references:
+            payload["references"] = references
+        if raw_submit_response is not None:
+            payload["raw_submit_response"] = raw_submit_response
+        if raw_last_response is not None:
+            payload["raw_last_response"] = raw_last_response
+        if video_url:
+            payload["video_url"] = video_url
+        if request_id:
+            payload["request_id"] = request_id
+        if error_code:
+            payload["error_code"] = error_code
+        if error_message:
+            payload["error_message"] = error_message
+
+        bridge = await self._request("POST", "/api/v1/tasks/bridge/upsert", __request__, payload)
+        return bool(bridge.get("ok"))
+
     def _extract_media_asset_references(self, prompt: str) -> list[str]:
         refs = re.findall(r"%([^\s%,，。；;:：!！?？)）\]】}》>\"“”'`]+)", prompt or "")
         cleaned: list[str] = []
@@ -791,6 +842,21 @@ class Tools:
             "video_url_markdown": "暂无",
             "raw_response": response_json,
         }
+
+        if task_id:
+            try:
+                await self._bridge_upsert_task(
+                    task_id=str(task_id),
+                    status=str(task_status),
+                    model=model_id,
+                    chat_id=chat_id,
+                    references=refs,
+                    raw_submit_response=response_json,
+                    raw_last_response=response_json,
+                    __request__=__request__,
+                )
+            except Exception:
+                pass
         return json.dumps(result, ensure_ascii=False)
 
     async def get_happyhorse_task_status(
@@ -839,6 +905,17 @@ class Tools:
         if resp.status_code >= 400:
             err = self._normalize_error(resp)
             err["task_id"] = tid
+            try:
+                await self._bridge_upsert_task(
+                    task_id=tid,
+                    status="FAILED",
+                    error_code=str(err.get("error_code") or "").strip() or None,
+                    error_message=str(err.get("error_message") or err.get("error") or "").strip() or None,
+                    request_id=str(err.get("request_id") or "").strip() or None,
+                    __request__=__request__,
+                )
+            except Exception:
+                pass
             return json.dumps(err, ensure_ascii=False)
 
         try:
@@ -861,6 +938,19 @@ class Tools:
             "error_code": output.get("code"),
             "error_message": output.get("message"),
         }
+        try:
+            await self._bridge_upsert_task(
+                task_id=str(payload.get("task_id") or tid),
+                status=str(task_status or ""),
+                raw_last_response=data if isinstance(data, dict) else None,
+                video_url=video_url,
+                request_id=str(payload.get("request_id") or "").strip() or None,
+                error_code=str(payload.get("error_code") or "").strip() or None,
+                error_message=str(payload.get("error_message") or "").strip() or None,
+                __request__=__request__,
+            )
+        except Exception:
+            pass
         return json.dumps(payload, ensure_ascii=False)
 
     async def wait_happyhorse_task(
