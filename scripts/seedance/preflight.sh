@@ -45,9 +45,9 @@ if ! command -v python >/dev/null 2>&1; then
   exit 3
 fi
 
-if ! python -c "import open_webui" >/dev/null 2>&1; then
-  echo "[ERROR] open_webui is not importable in current env."
-  echo "Run: pip install -e ."
+if ! PYTHONPATH="${ROOT_DIR}/backend${PYTHONPATH:+:${PYTHONPATH}}" python -c "import open_webui" >/dev/null 2>&1; then
+  echo "[ERROR] open_webui is not importable with local backend path."
+  echo "Check python runtime dependencies in current env."
   exit 4
 fi
 

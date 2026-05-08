@@ -7,9 +7,9 @@ HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8801}"
 DATA_DIR="${DATA_DIR:-}"
 
-if ! command -v open-webui >/dev/null 2>&1; then
-  echo "[ERROR] open-webui command not found in current env."
-  echo "Activate conda env and run: pip install -e ."
+if ! command -v python >/dev/null 2>&1; then
+  echo "[ERROR] python not found in current env."
+  echo "Activate conda env that contains runtime dependencies."
   exit 1
 fi
 
@@ -39,4 +39,9 @@ if [[ "${MATERIAL_PACK_TOS_ENABLED:-false}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]];
 fi
 
 cd "${ROOT_DIR}"
-exec open-webui serve --host "${HOST}" --port "${PORT}"
+
+# Always run backend from current repo to keep dev/prod isolated even when a shared
+# environment has open_webui editable-installed from another path.
+export PYTHONPATH="${ROOT_DIR}/backend${PYTHONPATH:+:${PYTHONPATH}}"
+echo "[INFO] PYTHONPATH=${ROOT_DIR}/backend${PYTHONPATH:+:...}"
+exec python -m open_webui serve --host "${HOST}" --port "${PORT}"
