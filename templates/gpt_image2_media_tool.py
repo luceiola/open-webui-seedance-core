@@ -1581,8 +1581,8 @@ class Tools:
                         "character": f"character{idx}",
                         "reference": ref_name,
                         "asset_id": asset_id,
-                        }
-                    )
+                    }
+                )
 
             if prompt_resources_for_task:
                 try:
