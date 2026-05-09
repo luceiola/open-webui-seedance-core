@@ -96,6 +96,22 @@ def _build_tasks_router_fixture():
 
     users_module = types.ModuleType('open_webui.models.users')
     users_module.UserModel = StubUserModel
+    groups_module = types.ModuleType('open_webui.models.groups')
+
+    class _Groups:
+        @staticmethod
+        async def get_all_groups(db=None):
+            return []
+
+        @staticmethod
+        async def get_groups_by_member_id(user_id, db=None):
+            return []
+
+        @staticmethod
+        async def get_groups_by_member_ids(user_ids, db=None):
+            return {user_id: [] for user_id in user_ids}
+
+    groups_module.Groups = _Groups
 
     material_module = types.ModuleType('open_webui.routers.material_packages')
     material_module.ARCHIVE_STATUS_PENDING = 'PENDING'
@@ -164,6 +180,7 @@ def _build_tasks_router_fixture():
         'open_webui.constants': constants_module,
         'open_webui.models': models_pkg,
         'open_webui.models.users': users_module,
+        'open_webui.models.groups': groups_module,
         'open_webui.routers': routers_pkg,
         'open_webui.routers.material_packages': material_module,
         'open_webui.routers.pipelines': pipelines_module,
@@ -340,6 +357,206 @@ def test_unified_tasks_list_contract_and_unknown_status_filter(tasks_router_modu
     assert response.items[0].provider == 'happyhorse'
     # UNKNOWN filter includes non-standard raw statuses; normalized output remains RUNNING.
     assert response.items[0].status == 'RUNNING'
+
+
+def test_unified_tasks_list_filters_by_group_and_time(tasks_router_module):
+    tasks_module, material_stub = tasks_router_module
+
+    task_records = {
+        'task-1': {
+            'task_id': 'task-1',
+            'provider': 'ark',
+            'status': 'RUNNING',
+            'archive_status': 'NOT_REQUIRED',
+            'model': 'doubao-seedance-1',
+            'created_at': 120,
+            'updated_at': 130,
+            'download_ready': False,
+            'user_name': 'User 1',
+        },
+        'task-2': {
+            'task_id': 'task-2',
+            'provider': 'ark',
+            'status': 'RUNNING',
+            'archive_status': 'NOT_REQUIRED',
+            'model': 'doubao-seedance-1',
+            'created_at': 320,
+            'updated_at': 330,
+            'download_ready': False,
+            'user_name': 'User 2',
+        },
+    }
+
+    material_stub._iter_task_record_paths = lambda: [
+        ('user-1', Path('/tmp/task-1.json')),
+        ('user-2', Path('/tmp/task-2.json')),
+    ]
+    material_stub._load_task_record_from_path = lambda path: dict(task_records[path.stem])
+    material_stub._normalize_task_defaults = lambda item, owner_user_id: False
+    material_stub._should_refresh_task_status = lambda item, refresh_min_interval_seconds: False
+    material_stub._is_soft_deleted = lambda item: False
+    material_stub._generation_skill_from_model = lambda model: 'seedance'
+
+    async def _get_groups_by_member_ids(user_ids, db=None):
+        _ = db
+        mapping = {
+            'user-1': [types.SimpleNamespace(id='g-a', name='A')],
+            'user-2': [types.SimpleNamespace(id='g-b', name='B')],
+        }
+        return {user_id: mapping.get(user_id, []) for user_id in user_ids}
+
+    tasks_module.Groups.get_groups_by_member_ids = staticmethod(_get_groups_by_member_ids)
+
+    requester = StubUserModel(id='admin-1', role='admin')
+    response = _run(
+        tasks_module.list_unified_tasks(
+            user_id=None,
+            provider=None,
+            skill_name=None,
+            tool_name=None,
+            task_status=None,
+            model=None,
+            group_id='g-b',
+            start_at=300,
+            end_at=500,
+            include_deleted=False,
+            refresh_status=False,
+            refresh_min_interval_seconds=5,
+            offset=0,
+            limit=48,
+            user=requester,
+        )
+    )
+
+    assert response.total == 1
+    assert len(response.items) == 1
+    assert response.items[0].id == 'task-2'
+
+
+def test_unified_tasks_list_rejects_invalid_time_range(tasks_router_module):
+    tasks_module, material_stub = tasks_router_module
+    material_stub._iter_task_record_paths = lambda: []
+
+    requester = StubUserModel(id='admin-1', role='admin')
+    with pytest.raises(HTTPException) as exc_info:
+        _run(
+            tasks_module.list_unified_tasks(
+                user_id=None,
+                provider=None,
+                skill_name=None,
+                tool_name=None,
+                task_status=None,
+                model=None,
+                group_id=None,
+                start_at=500,
+                end_at=100,
+                include_deleted=False,
+                refresh_status=False,
+                refresh_min_interval_seconds=5,
+                offset=0,
+                limit=48,
+                user=requester,
+            )
+        )
+
+    assert exc_info.value.status_code == 400
+    assert isinstance(exc_info.value.detail, dict)
+    assert exc_info.value.detail.get('code') == 'INVALID_TIME_RANGE'
+    assert exc_info.value.detail.get('message') == 'start_at must be <= end_at'
+
+
+def test_unified_tasks_groups_endpoint_returns_group_names(tasks_router_module):
+    tasks_module, _material_stub = tasks_router_module
+
+    async def _get_all_groups(db=None):
+        _ = db
+        return [
+            types.SimpleNamespace(id='g-2', name='Beta'),
+            types.SimpleNamespace(id='g-1', name='Alpha'),
+        ]
+
+    tasks_module.Groups.get_all_groups = staticmethod(_get_all_groups)
+
+    requester = StubUserModel(id='user-1', role='user')
+    response = _run(tasks_module.list_unified_task_groups(user=requester))
+
+    assert [row.group_id for row in response.groups] == ['g-1', 'g-2']
+    assert [row.group_name for row in response.groups] == ['Alpha', 'Beta']
+
+
+def test_unified_tasks_prompt_fields_are_backward_compatible(tasks_router_module):
+    tasks_module, material_stub = tasks_router_module
+
+    task_records = {
+        'task-modern': {
+            'task_id': 'task-modern',
+            'provider': 'ark',
+            'status': 'SUCCEEDED',
+            'archive_status': 'SUCCEEDED',
+            'created_at': 200,
+            'updated_at': 210,
+            'download_ready': True,
+            'user_name': 'Alice',
+            'prompt_text': '请参考 @01_FR1.png 生成',
+            'generation_params': {'model': 'doubao-seedance-1', 'duration': 5},
+            'prompt_resources': [
+                {'name': '01_FR1.png', 'url': 'https://example.com/01_FR1.png'},
+                {'name': 'bad', 'url': 'ftp://invalid'},
+            ],
+        },
+        'task-legacy': {
+            'task_id': 'task-legacy',
+            'provider': 'ark',
+            'status': 'SUCCEEDED',
+            'archive_status': 'SUCCEEDED',
+            'created_at': 100,
+            'updated_at': 110,
+            'download_ready': True,
+            'user_name': 'Bob',
+        },
+    }
+
+    material_stub._iter_task_record_paths = lambda: [
+        ('user-1', Path('/tmp/task-modern.json')),
+        ('user-2', Path('/tmp/task-legacy.json')),
+    ]
+    material_stub._load_task_record_from_path = lambda path: dict(task_records[path.stem])
+    material_stub._normalize_task_defaults = lambda item, owner_user_id: False
+    material_stub._should_refresh_task_status = lambda item, refresh_min_interval_seconds: False
+    material_stub._is_soft_deleted = lambda item: False
+    material_stub._generation_skill_from_model = lambda model: 'seedance'
+
+    requester = StubUserModel(id='admin-1', role='admin')
+    response = _run(
+        tasks_module.list_unified_tasks(
+            user_id=None,
+            provider=None,
+            skill_name=None,
+            tool_name=None,
+            task_status=None,
+            model=None,
+            group_id=None,
+            start_at=None,
+            end_at=None,
+            include_deleted=False,
+            refresh_status=False,
+            refresh_min_interval_seconds=5,
+            offset=0,
+            limit=48,
+            user=requester,
+        )
+    )
+
+    assert response.total == 2
+    assert response.items[0].id == 'task-modern'
+    assert response.items[0].prompt_text == '请参考 @01_FR1.png 生成'
+    assert response.items[0].generation_params == {'model': 'doubao-seedance-1', 'duration': 5}
+    assert response.items[0].prompt_resources == [{'name': '01_FR1.png', 'url': 'https://example.com/01_FR1.png'}]
+
+    assert response.items[1].id == 'task-legacy'
+    assert response.items[1].prompt_text is None
+    assert response.items[1].generation_params is None
+    assert response.items[1].prompt_resources == []
 
 
 def test_unified_task_providers_endpoint_orders_providers(tasks_router_module):

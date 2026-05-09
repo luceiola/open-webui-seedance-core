@@ -22,6 +22,7 @@ from open_webui.utils.task import (
 from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.constants import ERROR_MESSAGES, TASKS
 from open_webui.models.users import UserModel
+from open_webui.models.groups import Groups
 from open_webui.routers import material_packages as material_packages_router
 
 from open_webui.routers.pipelines import process_pipeline_inlet_filter
@@ -101,6 +102,9 @@ class UnifiedTaskItem(BaseModel):
     thumbnail_url: Optional[str] = None
     video_preview_url: Optional[str] = None
     video_download_url: Optional[str] = None
+    prompt_text: Optional[str] = None
+    generation_params: Optional[dict[str, Any]] = None
+    prompt_resources: list[dict[str, str]] = Field(default_factory=list)
 
 
 class UnifiedTaskArtifactItem(BaseModel):
@@ -133,6 +137,15 @@ class UnifiedTaskUserItem(BaseModel):
 
 class UnifiedTaskUsersResponse(BaseModel):
     users: list[UnifiedTaskUserItem]
+
+
+class UnifiedTaskGroupItem(BaseModel):
+    group_id: str
+    group_name: str
+
+
+class UnifiedTaskGroupsResponse(BaseModel):
+    groups: list[UnifiedTaskGroupItem]
 
 
 class UnifiedTaskProvidersResponse(BaseModel):
@@ -181,6 +194,9 @@ class TaskBridgeUpsertForm(BaseModel):
     request_id: Optional[str] = None
     credential_alias: Optional[str] = None
     routing_group_id: Optional[str] = None
+    prompt_text: Optional[str] = None
+    generation_params: Optional[dict[str, Any]] = None
+    prompt_resources: Optional[list[dict[str, Any]]] = None
     raw_submit_response: Optional[dict[str, Any]] = None
     raw_last_response: Optional[dict[str, Any]] = None
 
@@ -337,6 +353,27 @@ def _to_unified_task_item(
     inferred_skill = material_packages_router._generation_skill_from_model(item.get('model'))
     task_skill_name = str(item.get('skill_name') or inferred_skill or 'unknown').strip().lower() or 'unknown'
     task_tool_name = str(item.get('tool_name') or 'material_packages.generate').strip() or 'material_packages.generate'
+    prompt_text_value = item.get('prompt_text')
+    if prompt_text_value is not None:
+        prompt_text_value = str(prompt_text_value)
+    generation_params_value = item.get('generation_params')
+    if not isinstance(generation_params_value, dict):
+        generation_params_value = None
+    prompt_resources_value: list[dict[str, str]] = []
+    raw_prompt_resources = item.get('prompt_resources')
+    if isinstance(raw_prompt_resources, list):
+        seen_urls: set[str] = set()
+        for idx, entry in enumerate(raw_prompt_resources):
+            if not isinstance(entry, dict):
+                continue
+            url = str(entry.get('url') or '').strip()
+            if not url.startswith(('http://', 'https://')):
+                continue
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+            name = str(entry.get('name') or '').strip() or f'resource_{idx + 1}'
+            prompt_resources_value.append({'name': name, 'url': url})
 
     return UnifiedTaskItem(
         id=task_id,
@@ -364,6 +401,9 @@ def _to_unified_task_item(
         thumbnail_url=item.get('thumbnail_url'),
         video_preview_url=item.get('video_preview_url'),
         video_download_url=item.get('video_download_url'),
+        prompt_text=prompt_text_value,
+        generation_params=generation_params_value,
+        prompt_resources=prompt_resources_value,
     )
 
 
@@ -1139,6 +1179,9 @@ async def upsert_task_bridge(form_data: TaskBridgeUpsertForm, user: UserModel = 
         request_id=request_id,
         credential_alias=form_data.credential_alias,
         routing_group_id=form_data.routing_group_id,
+        prompt_text=form_data.prompt_text,
+        generation_params=form_data.generation_params,
+        prompt_resources=form_data.prompt_resources,
         raw_submit_response=raw_submit_response,
         raw_last_response=raw_last_response,
     )
@@ -1175,6 +1218,9 @@ async def list_unified_tasks(
     tool_name: Optional[str] = Query(default=None),
     task_status: Optional[str] = Query(default=None, alias='status'),
     model: Optional[str] = Query(default=None),
+    group_id: Optional[str] = Query(default=None),
+    start_at: Optional[int] = Query(default=None, ge=0),
+    end_at: Optional[int] = Query(default=None, ge=0),
     include_deleted: bool = Query(default=False),
     refresh_status: bool = Query(default=True),
     refresh_min_interval_seconds: int = Query(default=5, ge=0, le=600),
@@ -1190,12 +1236,62 @@ async def list_unified_tasks(
     desired_tool_name = (tool_name or '').strip().lower() if tool_name else None
     desired_model = (model or '').strip().lower() if model else None
     desired_status = _parse_status_filter(task_status)
+    desired_group_id = (group_id or '').strip() if isinstance(group_id, str) and group_id else None
+    start_at_value = int(start_at) if isinstance(start_at, int) else None
+    end_at_value = int(end_at) if isinstance(end_at, int) else None
+
+    if start_at_value is not None and end_at_value is not None and start_at_value > end_at_value:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                'code': 'INVALID_TIME_RANGE',
+                'message': 'start_at must be <= end_at',
+            },
+        )
 
     user_name_cache: dict[str, str] = {}
     rows: list[UnifiedTaskItem] = []
+    task_paths = material_packages_router._iter_task_record_paths()
+    owner_group_ids: dict[str, set[str]] = {}
 
-    for owner_user_id, path in material_packages_router._iter_task_record_paths():
+    if desired_group_id:
+        candidate_owner_ids = sorted(
+            {
+                str(owner_user_id)
+                for owner_user_id, _ in task_paths
+                if not desired_user or str(owner_user_id) == desired_user
+            }
+        )
+        if candidate_owner_ids:
+            try:
+                grouped_rows = await Groups.get_groups_by_member_ids(candidate_owner_ids)
+                if isinstance(grouped_rows, dict):
+                    for owner_user_id in candidate_owner_ids:
+                        owner_groups = grouped_rows.get(owner_user_id) or []
+                        owner_group_ids[str(owner_user_id)] = {
+                            str(getattr(group, 'id', '') or '').strip()
+                            for group in owner_groups
+                            if str(getattr(group, 'id', '') or '').strip()
+                        }
+                else:
+                    for owner_user_id in candidate_owner_ids:
+                        owner_group_ids[str(owner_user_id)] = set()
+            except Exception:
+                for owner_user_id in candidate_owner_ids:
+                    try:
+                        owner_groups = await Groups.get_groups_by_member_id(str(owner_user_id))
+                    except Exception:
+                        owner_groups = []
+                    owner_group_ids[str(owner_user_id)] = {
+                        str(getattr(group, 'id', '') or '').strip()
+                        for group in owner_groups
+                        if str(getattr(group, 'id', '') or '').strip()
+                    }
+
+    for owner_user_id, path in task_paths:
         if desired_user and str(owner_user_id) != desired_user:
+            continue
+        if desired_group_id and desired_group_id not in owner_group_ids.get(str(owner_user_id), set()):
             continue
 
         item = material_packages_router._load_task_record_from_path(path)
@@ -1236,6 +1332,12 @@ async def list_unified_tasks(
 
         task_model = str(item.get('model') or '').strip().lower()
         if desired_model and task_model != desired_model:
+            continue
+
+        created_at_value = int(item.get('created_at') or 0)
+        if start_at_value is not None and created_at_value < start_at_value:
+            continue
+        if end_at_value is not None and created_at_value > end_at_value:
             continue
 
         status_value = _normalize_unified_status(item.get('status'))
@@ -1300,6 +1402,32 @@ async def list_unified_task_users(
 
     rows.sort(key=lambda row: row.user_name.lower())
     return UnifiedTaskUsersResponse(users=rows)
+
+
+@router.get('/groups', response_model=UnifiedTaskGroupsResponse)
+async def list_unified_task_groups(user: UserModel = Depends(get_verified_user)):
+    _ = user
+    try:
+        groups = await Groups.get_all_groups()
+    except Exception:
+        log.exception('Failed to load groups for /api/v1/tasks/groups')
+        groups = []
+
+    rows: list[UnifiedTaskGroupItem] = []
+    for group in groups:
+        group_id = str(getattr(group, 'id', '') or '').strip()
+        if not group_id:
+            continue
+        group_name = str(getattr(group, 'name', '') or '').strip() or group_id
+        rows.append(
+            UnifiedTaskGroupItem(
+                group_id=group_id,
+                group_name=group_name,
+            )
+        )
+
+    rows.sort(key=lambda row: row.group_name.lower())
+    return UnifiedTaskGroupsResponse(groups=rows)
 
 
 @router.get('/providers', response_model=UnifiedTaskProvidersResponse)

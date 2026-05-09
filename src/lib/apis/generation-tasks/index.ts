@@ -29,6 +29,26 @@ export type GenerationTaskItem = {
 	error_code?: string | null;
 	error_message?: string | null;
 	request_id?: string | null;
+	prompt_text?: string | null;
+	generation_params?: Record<string, unknown> | null;
+	prompt_resources?: GenerationTaskPromptResourceItem[];
+};
+
+export type GenerationTaskPromptResourceItem = {
+	name: string;
+	url: string;
+};
+
+export type GenerationTaskGroupItem = {
+	group_id: string;
+	group_name: string;
+};
+
+export type GenerationTaskListResult = {
+	items: GenerationTaskItem[];
+	total: number;
+	offset: number;
+	limit: number;
 };
 
 type UnifiedTaskApiItem = {
@@ -57,6 +77,9 @@ type UnifiedTaskApiItem = {
 	thumbnail_url?: string | null;
 	video_preview_url?: string | null;
 	video_download_url?: string | null;
+	prompt_text?: string | null;
+	generation_params?: Record<string, unknown> | null;
+	prompt_resources?: Array<{ name?: string; url?: string }> | null;
 };
 
 type UnifiedTaskListResponse = {
@@ -73,6 +96,10 @@ export type GenerationTaskUserItem = {
 
 export type GenerationTaskProviderResponse = {
 	providers: string[];
+};
+
+type GenerationTaskGroupsResponse = {
+	groups: GenerationTaskGroupItem[];
 };
 
 export type GenerationTaskPreview = {
@@ -123,7 +150,20 @@ const mapUnifiedTaskToLegacy = (item: UnifiedTaskApiItem): GenerationTaskItem =>
 		video_url: null,
 		error_code: item.error_code ?? null,
 		error_message: item.error_message ?? null,
-		request_id: item.request_id ?? null
+		request_id: item.request_id ?? null,
+		prompt_text: item.prompt_text ?? null,
+		generation_params:
+			item.generation_params && typeof item.generation_params === 'object'
+				? item.generation_params
+				: null,
+		prompt_resources: Array.isArray(item.prompt_resources)
+			? item.prompt_resources
+					.map((entry) => ({
+						name: String(entry?.name || '').trim(),
+						url: String(entry?.url || '').trim()
+					}))
+					.filter((entry) => entry.url.startsWith('http://') || entry.url.startsWith('https://'))
+			: []
 	};
 };
 
@@ -136,6 +176,9 @@ export const listGenerationTasks = async (
 		tool_name?: string;
 		status?: string;
 		model?: string;
+		group_id?: string;
+		start_at?: number;
+		end_at?: number;
 		chat_id?: string;
 		package_id?: string;
 		include_deleted?: boolean;
@@ -143,7 +186,7 @@ export const listGenerationTasks = async (
 		offset?: number;
 		limit?: number;
 	} = {}
-): Promise<GenerationTaskItem[]> => {
+): Promise<GenerationTaskListResult> => {
 	const query = new URLSearchParams();
 	if (params.user_id) query.append('user_id', params.user_id);
 	if (params.provider) query.append('provider', params.provider);
@@ -151,6 +194,9 @@ export const listGenerationTasks = async (
 	if (params.tool_name) query.append('tool_name', params.tool_name);
 	if (params.status) query.append('status', params.status);
 	if (params.model) query.append('model', params.model);
+	if (params.group_id) query.append('group_id', params.group_id);
+	if (params.start_at !== undefined) query.append('start_at', String(params.start_at));
+	if (params.end_at !== undefined) query.append('end_at', String(params.end_at));
 	if (params.chat_id) query.append('chat_id', params.chat_id);
 	if (params.package_id) query.append('package_id', params.package_id);
 	if (params.include_deleted !== undefined) {
@@ -174,17 +220,37 @@ export const listGenerationTasks = async (
 		.catch((err) => {
 			error = err?.detail || err?.message || 'Failed to list generation tasks';
 			console.error(err);
-			return [];
+			return null;
 		});
 
 	if (error) throw error;
 	if (Array.isArray(res)) {
-		return res;
+		const items = (res as GenerationTaskItem[]).map((item) => ({
+			...item,
+			prompt_resources: item.prompt_resources || []
+		}));
+		return {
+			items,
+			total: items.length,
+			offset: params.offset ?? 0,
+			limit: params.limit ?? 50
+		};
 	}
 	if (res && Array.isArray((res as UnifiedTaskListResponse).items)) {
-		return (res as UnifiedTaskListResponse).items.map(mapUnifiedTaskToLegacy);
+		const payload = res as UnifiedTaskListResponse;
+		return {
+			items: payload.items.map(mapUnifiedTaskToLegacy),
+			total: Number(payload.total ?? 0),
+			offset: Number(payload.offset ?? params.offset ?? 0),
+			limit: Number(payload.limit ?? params.limit ?? 50)
+		};
 	}
-	return [];
+	return {
+		items: [],
+		total: 0,
+		offset: params.offset ?? 0,
+		limit: params.limit ?? 50
+	};
 };
 
 export const listGenerationTaskUsers = async (token: string): Promise<GenerationTaskUserItem[]> => {
@@ -242,6 +308,32 @@ export const listGenerationTaskProviders = async (
 	}
 	if (Array.isArray(res)) {
 		return res as string[];
+	}
+	return [];
+};
+
+export const listGenerationTaskGroups = async (token: string): Promise<GenerationTaskGroupItem[]> => {
+	let error = null;
+	const res = await fetch(`${WEBUI_API_BASE_URL}/tasks/groups`, {
+		method: 'GET',
+		headers: buildAuthHeaders(token)
+	})
+		.then(async (resp) => {
+			if (!resp.ok) throw await resp.json();
+			return resp.json();
+		})
+		.catch((err) => {
+			error = err?.detail || err?.message || 'Failed to list task groups';
+			console.error(err);
+			return null;
+		});
+
+	if (error) throw error;
+	if (Array.isArray(res)) {
+		return res as GenerationTaskGroupItem[];
+	}
+	if (res && Array.isArray((res as GenerationTaskGroupsResponse).groups)) {
+		return (res as GenerationTaskGroupsResponse).groups;
 	}
 	return [];
 };

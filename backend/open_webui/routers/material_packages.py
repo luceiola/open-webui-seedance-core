@@ -873,6 +873,44 @@ def _sync_task_serving_fields(user_id: str, task_record: dict[str, Any]) -> bool
     return changed
 
 
+def _normalize_task_generation_params(raw: Any) -> Optional[dict[str, Any]]:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        return None
+
+    normalized: dict[str, Any] = {}
+    for key, value in raw.items():
+        param_key = str(key or '').strip()
+        if not param_key:
+            continue
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            normalized[param_key] = value
+        else:
+            normalized[param_key] = str(value)
+    return normalized or None
+
+
+def _normalize_task_prompt_resources(raw: Any) -> list[dict[str, str]]:
+    if not isinstance(raw, list):
+        return []
+
+    normalized: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for idx, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            continue
+        url = str(entry.get('url') or '').strip()
+        if not url.startswith(('http://', 'https://')):
+            continue
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+        name = str(entry.get('name') or '').strip() or f'resource_{idx + 1}'
+        normalized.append({'name': name, 'url': url})
+    return normalized
+
+
 def _normalize_task_defaults(task_record: dict[str, Any], *, owner_user_id: str) -> bool:
     changed = False
 
@@ -917,6 +955,27 @@ def _normalize_task_defaults(task_record: dict[str, Any], *, owner_user_id: str)
     if 'routing_group_id' not in task_record:
         task_record['routing_group_id'] = None
         changed = True
+    if 'prompt_text' not in task_record:
+        task_record['prompt_text'] = None
+        changed = True
+
+    if 'generation_params' not in task_record:
+        task_record['generation_params'] = None
+        changed = True
+    else:
+        normalized_generation_params = _normalize_task_generation_params(task_record.get('generation_params'))
+        if normalized_generation_params != task_record.get('generation_params'):
+            task_record['generation_params'] = normalized_generation_params
+            changed = True
+
+    if 'prompt_resources' not in task_record:
+        task_record['prompt_resources'] = []
+        changed = True
+    else:
+        normalized_prompt_resources = _normalize_task_prompt_resources(task_record.get('prompt_resources'))
+        if normalized_prompt_resources != task_record.get('prompt_resources'):
+            task_record['prompt_resources'] = normalized_prompt_resources
+            changed = True
 
     artifact_kind = str(task_record.get('artifact_kind') or '').strip().lower()
     if artifact_kind not in TASK_ARTIFACT_KINDS:
@@ -1525,6 +1584,9 @@ def _touch_task_record(
     request_id: Optional[str] = None,
     credential_alias: Optional[str] = None,
     routing_group_id: Optional[str] = None,
+    prompt_text: Optional[str] = None,
+    generation_params: Optional[dict[str, Any]] = None,
+    prompt_resources: Optional[list[dict[str, Any]]] = None,
     raw_submit_response: Optional[dict[str, Any]] = None,
     raw_last_response: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
@@ -1593,6 +1655,13 @@ def _touch_task_record(
         current['credential_alias'] = str(credential_alias).strip() or None
     if routing_group_id is not None:
         current['routing_group_id'] = str(routing_group_id).strip() or None
+    if prompt_text is not None:
+        prompt_value = str(prompt_text)
+        current['prompt_text'] = prompt_value if prompt_value.strip() else None
+    if generation_params is not None:
+        current['generation_params'] = _normalize_task_generation_params(generation_params)
+    if prompt_resources is not None:
+        current['prompt_resources'] = _normalize_task_prompt_resources(prompt_resources)
     if raw_submit_response is not None:
         current['raw_submit_response'] = raw_submit_response
     if raw_last_response is not None:
@@ -3000,6 +3069,7 @@ async def generate_with_material_package(
             )
 
         unresolved_references: list[dict[str, Any]] = []
+        prompt_resources: list[dict[str, str]] = []
         manifest_changed = False
 
         for idx, ref in enumerate(references):
@@ -3051,6 +3121,7 @@ async def generate_with_material_package(
                     url=file_url,
                 )
             )
+            prompt_resources.append({'name': ref, 'url': file_url})
 
         if manifest_changed:
             manifest['updated_at'] = int(time.time())
@@ -3081,6 +3152,15 @@ async def generate_with_material_package(
             payload['watermark'] = form_data.watermark
         if generation_skill == GENERATION_SKILL_SEEDANCE and form_data.generate_audio is not None:
             payload['generate_audio'] = form_data.generate_audio
+        generation_params: dict[str, Any] = {'model': form_data.model}
+        if form_data.duration is not None:
+            generation_params['duration'] = form_data.duration
+        if form_data.ratio:
+            generation_params['ratio'] = form_data.ratio
+        if form_data.watermark is not None:
+            generation_params['watermark'] = form_data.watermark
+        if generation_skill == GENERATION_SKILL_SEEDANCE and form_data.generate_audio is not None:
+            generation_params['generate_audio'] = form_data.generate_audio
 
         resolved = await _resolve_provider_credential(provider='seedance', user_id=str(user.id))
         response_json = await _submit_generation_task_to_ark(
@@ -3117,6 +3197,9 @@ async def generate_with_material_package(
                 status=task_status,
                 credential_alias=str(resolved.get('credential_alias') or '').strip() or None,
                 routing_group_id=str(resolved.get('routing_group_id') or '').strip() or None,
+                prompt_text=form_data.prompt,
+                generation_params=generation_params,
+                prompt_resources=prompt_resources,
                 raw_submit_response=response_json,
                 raw_last_response=response_json,
             )
