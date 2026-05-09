@@ -574,6 +574,9 @@ class Tools:
         error_message: Optional[str] = None,
         credential_alias: Optional[str] = None,
         routing_group_id: Optional[str] = None,
+        prompt_text: Optional[str] = None,
+        generation_params: Optional[dict[str, Any]] = None,
+        prompt_resources: Optional[list[dict[str, Any]]] = None,
         __request__: Optional[Request] = None,
     ) -> bool:
         tid = (task_id or "").strip()
@@ -611,6 +614,12 @@ class Tools:
             payload["credential_alias"] = credential_alias
         if routing_group_id:
             payload["routing_group_id"] = routing_group_id
+        if prompt_text is not None:
+            payload["prompt_text"] = str(prompt_text)
+        if generation_params is not None:
+            payload["generation_params"] = generation_params
+        if prompt_resources is not None:
+            payload["prompt_resources"] = prompt_resources
 
         bridge = await self._request("POST", "/api/v1/tasks/bridge/upsert", __request__, payload)
         return bool(bridge.get("ok"))
@@ -1245,18 +1254,22 @@ class Tools:
 
         cleaned_prompt = str(resolve_data.get("cleaned_prompt") or prompt)
         resolved_assets = [item for item in (resolve_data.get("assets") or []) if isinstance(item, dict)]
+        prompt_text_for_task = str(prompt or "").strip() or cleaned_prompt
 
         seedance_content: list[dict[str, Any]] = [{"type": "text", "text": cleaned_prompt}]
         unresolved_references: list[dict[str, Any]] = []
-        for asset in resolved_assets:
+        prompt_resources_for_task: list[dict[str, str]] = []
+        for idx, asset in enumerate(resolved_assets):
             asset_id = str(asset.get("asset_id") or "").strip()
             media_type = str(asset.get("media_type") or "").strip().lower()
-            ref_name = str(
-                asset.get("relative_path")
-                or asset.get("display_name")
-                or asset.get("original_filename")
-                or asset_id
-            )
+            ref_name = str((refs[idx] if idx < len(refs) else "") or "").strip()
+            if not ref_name:
+                ref_name = str(
+                    asset.get("relative_path")
+                    or asset.get("display_name")
+                    or asset.get("original_filename")
+                    or asset_id
+                )
             if not asset_id:
                 unresolved_references.append({"reference": ref_name, "error": "missing asset_id"})
                 continue
@@ -1301,6 +1314,7 @@ class Tools:
 
             try:
                 seedance_content.append(self._build_seedance_reference_block(media_type, media_url))
+                prompt_resources_for_task.append({"name": ref_name, "url": media_url})
             except Exception as e:
                 unresolved_references.append(
                     {
@@ -1334,6 +1348,16 @@ class Tools:
             payload["watermark"] = watermark
         if generate_audio is not None:
             payload["generate_audio"] = generate_audio
+
+        generation_params_for_task: dict[str, Any] = {}
+        if duration is not None:
+            generation_params_for_task["duration"] = duration
+        if ratio.strip():
+            generation_params_for_task["ratio"] = ratio.strip()
+        if watermark is not None:
+            generation_params_for_task["watermark"] = watermark
+        if generate_audio is not None:
+            generation_params_for_task["generate_audio"] = generate_audio
 
         submit = await self._request(
             "POST",
@@ -1371,6 +1395,9 @@ class Tools:
                     raw_last_response=response_json,
                     credential_alias=credential_alias,
                     routing_group_id=routing_group_id,
+                    prompt_text=prompt_text_for_task,
+                    generation_params=generation_params_for_task or None,
+                    prompt_resources=prompt_resources_for_task,
                     __request__=__request__,
                 )
             except Exception:

@@ -367,18 +367,25 @@
 		const resources = (task.prompt_resources || []).filter(
 			(item) => item.url.startsWith('http://') || item.url.startsWith('https://')
 		);
-		const urlByRef = new Map(resources.map((item) => [String(item.name || '').trim(), item.url]));
-		const regex = /@([^\s@,，。；;:：!！?？)）\]】}》>"“”'`]+)/g;
+		const urlByRef = new Map<string, string>();
+		resources.forEach((item) => {
+			const rawName = String(item.name || '').trim();
+			if (!rawName) return;
+			urlByRef.set(rawName, item.url);
+			urlByRef.set(rawName.replace(/^[@%]+/, ''), item.url);
+		});
+		const regex = /([@%])([^\s@%,，。；;:：!！?？)）\]】}》>"“”'`]+)/g;
 		const segments: PromptSegment[] = [];
 		let lastIdx = 0;
 		let match: RegExpExecArray | null = null;
 		while ((match = regex.exec(prompt)) !== null) {
 			const full = match[0];
-			const ref = String(match[1] || '').trim();
+			const prefix = String(match[1] || '');
+			const ref = String(match[2] || '').trim();
 			if (match.index > lastIdx) {
 				segments.push({ text: prompt.slice(lastIdx, match.index) });
 			}
-			const mappedUrl = urlByRef.get(ref);
+			const mappedUrl = urlByRef.get(ref) || urlByRef.get(`${prefix}${ref}`);
 			if (mappedUrl) {
 				segments.push({ text: full, url: mappedUrl });
 			} else {
@@ -407,12 +414,12 @@
 		const params = task.generation_params;
 		if (params && typeof params === 'object') {
 			Object.entries(params).forEach(([key, value]) => {
+				if (String(key).toLowerCase() === 'model') return;
 				pushIfPresent(key, value);
 			});
 			return rows;
 		}
 
-		pushIfPresent('model', task.model);
 		pushIfPresent('duration', task.duration);
 		pushIfPresent('ratio', task.ratio);
 		if (task.watermark !== undefined && task.watermark !== null) {

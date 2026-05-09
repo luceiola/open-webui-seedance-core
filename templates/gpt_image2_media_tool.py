@@ -255,6 +255,9 @@ class Tools:
         request_id: Optional[str] = None,
         error_code: Optional[str] = None,
         error_message: Optional[str] = None,
+        prompt_text: Optional[str] = None,
+        generation_params: Optional[dict[str, Any]] = None,
+        prompt_resources: Optional[list[dict[str, Any]]] = None,
         __request__: Optional[Request] = None,
     ) -> bool:
         tid = (task_id or "").strip()
@@ -290,6 +293,12 @@ class Tools:
             payload["error_code"] = error_code
         if error_message:
             payload["error_message"] = error_message
+        if prompt_text is not None:
+            payload["prompt_text"] = str(prompt_text)
+        if generation_params is not None:
+            payload["generation_params"] = generation_params
+        if prompt_resources is not None:
+            payload["prompt_resources"] = prompt_resources
 
         bridge = await self._request("POST", "/api/v1/tasks/bridge/upsert", __request__, payload)
         return bool(bridge.get("ok"))
@@ -1402,6 +1411,18 @@ class Tools:
             )
 
         task_id = self._new_task_id()
+        generation_params_for_task: dict[str, Any] = {
+            "size": size_value,
+            "quality": quality_value,
+            "background": background_value,
+            "output_format": output_format_value,
+            "n": n_value,
+        }
+        if output_compression_value is not None:
+            generation_params_for_task["output_compression"] = output_compression_value
+        if moderation_value is not None:
+            generation_params_for_task["moderation"] = moderation_value
+        prompt_resources_for_task: list[dict[str, str]] = []
         initial_record = {
             "task_id": task_id,
             "response_id": task_id,
@@ -1436,6 +1457,9 @@ class Tools:
                 references=refs,
                 raw_submit_response=initial_record,
                 raw_last_response=initial_record,
+                prompt_text=prompt_text,
+                generation_params=generation_params_for_task,
+                prompt_resources=prompt_resources_for_task,
                 __request__=__request__,
             )
         except Exception:
@@ -1527,6 +1551,9 @@ class Tools:
                     )
                     continue
 
+                prompt_resources_for_task.append(
+                    {"name": ref_name or f"resource_{idx}", "url": media_url}
+                )
                 download = await self._download_binary(media_url)
                 if not download.get("ok"):
                     unsupported_refs.append(
@@ -1554,8 +1581,19 @@ class Tools:
                         "character": f"character{idx}",
                         "reference": ref_name,
                         "asset_id": asset_id,
-                    }
-                )
+                        }
+                    )
+
+            if prompt_resources_for_task:
+                try:
+                    await self._bridge_upsert_task(
+                        task_id=task_id,
+                        status="PENDING",
+                        prompt_resources=prompt_resources_for_task,
+                        __request__=__request__,
+                    )
+                except Exception:
+                    pass
 
             if unsupported_refs:
                 failed = {

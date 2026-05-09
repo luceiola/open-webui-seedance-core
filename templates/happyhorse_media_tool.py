@@ -224,6 +224,9 @@ class Tools:
         request_id: Optional[str] = None,
         error_code: Optional[str] = None,
         error_message: Optional[str] = None,
+        prompt_text: Optional[str] = None,
+        generation_params: Optional[dict[str, Any]] = None,
+        prompt_resources: Optional[list[dict[str, Any]]] = None,
         __request__: Optional[Request] = None,
     ) -> bool:
         tid = (task_id or "").strip()
@@ -257,6 +260,12 @@ class Tools:
             payload["error_code"] = error_code
         if error_message:
             payload["error_message"] = error_message
+        if prompt_text is not None:
+            payload["prompt_text"] = str(prompt_text)
+        if generation_params is not None:
+            payload["generation_params"] = generation_params
+        if prompt_resources is not None:
+            payload["prompt_resources"] = prompt_resources
 
         bridge = await self._request("POST", "/api/v1/tasks/bridge/upsert", __request__, payload)
         return bool(bridge.get("ok"))
@@ -629,11 +638,15 @@ class Tools:
         unsupported_refs: list[dict[str, Any]] = []
         media_items: list[dict[str, Any]] = []
         character_mapping: list[dict[str, Any]] = []
+        prompt_text_for_task = str(prompt or "").strip()
+        prompt_resources_for_task: list[dict[str, str]] = []
 
         for idx, asset in enumerate(resolved_assets, start=1):
             asset_id = str(asset.get("asset_id") or "").strip()
             media_type = str(asset.get("media_type") or "").strip().lower()
-            ref_name = str(asset.get("relative_path") or asset.get("display_name") or asset.get("original_filename") or "")
+            ref_name = str((refs[idx - 1] if idx - 1 < len(refs) else "") or "").strip()
+            if not ref_name:
+                ref_name = str(asset.get("relative_path") or asset.get("display_name") or asset.get("original_filename") or "")
 
             if media_type != "image":
                 unsupported_refs.append(
@@ -688,6 +701,7 @@ class Tools:
                 continue
 
             media_items.append({"type": "reference_image", "url": media_url})
+            prompt_resources_for_task.append({"name": ref_name or f"resource_{idx}", "url": media_url})
             character_mapping.append(
                 {
                     "character": f"character{idx}",
@@ -807,6 +821,14 @@ class Tools:
             parameters["seed"] = seed_int
 
         payload["parameters"] = parameters
+        generation_params_for_task = {
+            "resolution": parameters.get("resolution"),
+            "ratio": parameters.get("ratio"),
+            "duration": parameters.get("duration"),
+            "watermark": parameters.get("watermark"),
+        }
+        if "seed" in parameters:
+            generation_params_for_task["seed"] = parameters["seed"]
 
         base_url = self._get_dashscope_base_url()
         url = f"{base_url}/services/aigc/video-generation/video-synthesis"
@@ -853,6 +875,9 @@ class Tools:
                     references=refs,
                     raw_submit_response=response_json,
                     raw_last_response=response_json,
+                    prompt_text=prompt_text_for_task,
+                    generation_params=generation_params_for_task,
+                    prompt_resources=prompt_resources_for_task,
                     __request__=__request__,
                 )
             except Exception:
