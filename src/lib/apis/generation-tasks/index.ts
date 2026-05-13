@@ -63,6 +63,7 @@ type UnifiedTaskApiItem = {
 	model?: string | null;
 	status?: string | null;
 	archive_status?: string | null;
+	archive_error?: string | null;
 	progress?: number | null;
 	download_ready?: boolean;
 	can_delete?: boolean;
@@ -130,7 +131,7 @@ const mapUnifiedTaskToLegacy = (item: UnifiedTaskApiItem): GenerationTaskItem =>
 		model: item.model ?? null,
 		status: item.status ?? null,
 		archive_status: item.archive_status ?? null,
-		archive_error: null,
+		archive_error: item.archive_error ?? null,
 		archive_retry_count: null,
 		archive_updated_at: null,
 		download_ready: Boolean(item.download_ready),

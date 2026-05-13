@@ -559,6 +559,126 @@ def test_unified_tasks_prompt_fields_are_backward_compatible(tasks_router_module
     assert response.items[1].prompt_resources == []
 
 
+def test_unified_tasks_backfills_error_fields_from_raw_payload(tasks_router_module):
+    tasks_module, material_stub = tasks_router_module
+
+    task_records = {
+        'task-failed': {
+            'task_id': 'task-failed',
+            'provider': 'ark',
+            'status': 'FAILED',
+            'archive_status': 'FAILED',
+            'created_at': 100,
+            'updated_at': 200,
+            'download_ready': False,
+            'user_name': 'Alice',
+            # message already exists and should not be overwritten by fallback.
+            'error_message': 'top-level message',
+            'raw_last_response': {
+                'error_code': 'AccountOverdueError',
+                'error_message': 'fallback message from raw_last_response',
+                'request_id': 'req-from-raw-last',
+            },
+            'raw_submit_response': {
+                'error_code': 'FallbackSubmitError',
+                'error_message': 'fallback message from raw_submit_response',
+                'request_id': 'req-from-raw-submit',
+            },
+        }
+    }
+
+    material_stub._iter_task_record_paths = lambda: [('user-1', Path('/tmp/task-failed.json'))]
+    material_stub._load_task_record_from_path = lambda path: dict(task_records[path.stem])
+    material_stub._normalize_task_defaults = lambda item, owner_user_id: False
+    material_stub._should_refresh_task_status = lambda item, refresh_min_interval_seconds: False
+    material_stub._is_soft_deleted = lambda item: False
+    material_stub._generation_skill_from_model = lambda model: 'seedance'
+    material_stub._extract_error_info = lambda payload: {
+        'error_code': payload.get('error_code'),
+        'error_message': payload.get('error_message'),
+        'request_id': payload.get('request_id'),
+    }
+
+    requester = StubUserModel(id='admin-1', role='admin')
+    response = _run(
+        tasks_module.list_unified_tasks(
+            user_id=None,
+            provider=None,
+            skill_name=None,
+            tool_name=None,
+            task_status=None,
+            model=None,
+            group_id=None,
+            start_at=None,
+            end_at=None,
+            include_deleted=False,
+            refresh_status=False,
+            refresh_min_interval_seconds=5,
+            offset=0,
+            limit=48,
+            user=requester,
+        )
+    )
+
+    assert response.total == 1
+    assert len(response.items) == 1
+    assert response.items[0].id == 'task-failed'
+    assert response.items[0].error_code == 'AccountOverdueError'
+    assert response.items[0].error_message == 'top-level message'
+    assert response.items[0].request_id == 'req-from-raw-last'
+
+
+def test_unified_tasks_includes_archive_error(tasks_router_module):
+    tasks_module, material_stub = tasks_router_module
+
+    task_records = {
+        'task-archive-failed': {
+            'task_id': 'task-archive-failed',
+            'provider': 'ark',
+            'status': 'SUCCEEDED',
+            'archive_status': 'FAILED',
+            'archive_error': 'download timeout while archiving',
+            'created_at': 100,
+            'updated_at': 200,
+            'download_ready': False,
+            'user_name': 'Alice',
+        }
+    }
+
+    material_stub._iter_task_record_paths = lambda: [('user-1', Path('/tmp/task-archive-failed.json'))]
+    material_stub._load_task_record_from_path = lambda path: dict(task_records[path.stem])
+    material_stub._normalize_task_defaults = lambda item, owner_user_id: False
+    material_stub._should_refresh_task_status = lambda item, refresh_min_interval_seconds: False
+    material_stub._is_soft_deleted = lambda item: False
+    material_stub._generation_skill_from_model = lambda model: 'seedance'
+
+    requester = StubUserModel(id='admin-1', role='admin')
+    response = _run(
+        tasks_module.list_unified_tasks(
+            user_id=None,
+            provider=None,
+            skill_name=None,
+            tool_name=None,
+            task_status=None,
+            model=None,
+            group_id=None,
+            start_at=None,
+            end_at=None,
+            include_deleted=False,
+            refresh_status=False,
+            refresh_min_interval_seconds=5,
+            offset=0,
+            limit=48,
+            user=requester,
+        )
+    )
+
+    assert response.total == 1
+    assert len(response.items) == 1
+    assert response.items[0].id == 'task-archive-failed'
+    assert response.items[0].archive_error == 'download timeout while archiving'
+
+
 def test_unified_task_providers_endpoint_orders_providers(tasks_router_module):
     tasks_module, material_stub = tasks_router_module
 

@@ -88,6 +88,7 @@ class UnifiedTaskItem(BaseModel):
     model: Optional[str] = None
     status: str
     archive_status: str
+    archive_error: Optional[str] = None
     progress: Optional[float] = None
     download_ready: bool = False
     can_delete: bool = False
@@ -353,6 +354,30 @@ def _to_unified_task_item(
     inferred_skill = material_packages_router._generation_skill_from_model(item.get('model'))
     task_skill_name = str(item.get('skill_name') or inferred_skill or 'unknown').strip().lower() or 'unknown'
     task_tool_name = str(item.get('tool_name') or 'material_packages.generate').strip() or 'material_packages.generate'
+
+    error_code_value = str(item.get('error_code') or '').strip() or None
+    error_message_value = str(item.get('error_message') or '').strip() or None
+    request_id_value = str(item.get('request_id') or '').strip() or None
+    if not error_code_value or not error_message_value or not request_id_value:
+        for raw_payload in (item.get('raw_last_response'), item.get('raw_submit_response')):
+            if not isinstance(raw_payload, dict):
+                continue
+            parsed_error = material_packages_router._extract_error_info(raw_payload)
+            if not error_code_value:
+                parsed_code = str(parsed_error.get('error_code') or '').strip()
+                if parsed_code:
+                    error_code_value = parsed_code
+            if not error_message_value:
+                parsed_message = str(parsed_error.get('error_message') or '').strip()
+                if parsed_message:
+                    error_message_value = parsed_message
+            if not request_id_value:
+                parsed_request_id = str(parsed_error.get('request_id') or '').strip()
+                if parsed_request_id:
+                    request_id_value = parsed_request_id
+            if error_code_value and error_message_value and request_id_value:
+                break
+
     prompt_text_value = item.get('prompt_text')
     if prompt_text_value is not None:
         prompt_text_value = str(prompt_text_value)
@@ -387,13 +412,14 @@ def _to_unified_task_item(
         model=item.get('model'),
         status=status_value,
         archive_status=archive_status,
+        archive_error=str(item.get('archive_error') or '').strip() or None,
         progress=progress_value,
         download_ready=bool(item.get('download_ready')),
         can_delete=can_delete,
         can_cancel=can_cancel,
-        error_code=item.get('error_code'),
-        error_message=item.get('error_message'),
-        request_id=item.get('request_id'),
+        error_code=error_code_value,
+        error_message=error_message_value,
+        request_id=request_id_value,
         deleted_at=int(item.get('deleted_at') or 0) or None,
         created_at=created_at,
         updated_at=updated_at,

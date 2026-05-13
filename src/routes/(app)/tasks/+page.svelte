@@ -46,14 +46,16 @@
 	let selectedProvider = '';
 	let selectedStatus = '';
 	let selectedTimePreset = '7d';
-	let customStartAt = '';
-	let customEndAt = '';
-	let includeDeleted = false;
+	let autoApplyTimer: ReturnType<typeof setTimeout> | null = null;
+	let initialized = false;
+	let lastAppliedFilterKey = '';
 
 	let showPreview = false;
 	let selectedTask: GenerationTaskItem | null = null;
 	let selectedTaskPromptSegments: PromptSegment[] = [];
 	let selectedTaskParamEntries: Array<[string, string]> = [];
+	let selectedTaskIsFailed = false;
+	let selectedTaskFailureReason = '';
 
 	type PromptSegment = {
 		text: string;
@@ -67,7 +69,8 @@
 		{ value: '24h', label: '最近24小时' },
 		{ value: '7d', label: '最近7天' },
 		{ value: '30d', label: '最近30天' },
-		{ value: 'custom', label: '自定义时间' }
+		{ value: '90d', label: '最近3个月' },
+		{ value: '180d', label: '最近半年' }
 	];
 
 	const toAssetUrl = (value?: string | null) => {
@@ -84,21 +87,6 @@
 	const taskRowKey = (task: GenerationTaskItem) =>
 		`${String(task.user_id || '')}::${String(task.task_id || '')}`;
 
-	const datetimeLocalToEpoch = (value: string): number | undefined => {
-		const text = String(value || '').trim();
-		if (!text) return undefined;
-		const ms = new Date(text).getTime();
-		if (Number.isNaN(ms) || ms <= 0) return undefined;
-		return Math.floor(ms / 1000);
-	};
-
-	const epochToDatetimeLocal = (epochSeconds: number): string => {
-		const d = new Date(Number(epochSeconds) * 1000);
-		if (Number.isNaN(d.getTime())) return '';
-		const pad = (v: number) => String(v).padStart(2, '0');
-		return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-	};
-
 	const resolveTimeRange = (): { startAt?: number; endAt?: number } => {
 		const now = Math.floor(Date.now() / 1000);
 		if (selectedTimePreset === '24h') {
@@ -110,22 +98,25 @@
 		if (selectedTimePreset === '30d') {
 			return { startAt: now - 30 * 24 * 3600, endAt: now };
 		}
-		if (selectedTimePreset === 'custom') {
-			return {
-				startAt: datetimeLocalToEpoch(customStartAt),
-				endAt: datetimeLocalToEpoch(customEndAt)
-			};
+		if (selectedTimePreset === '90d') {
+			return { startAt: now - 90 * 24 * 3600, endAt: now };
+		}
+		if (selectedTimePreset === '180d') {
+			return { startAt: now - 180 * 24 * 3600, endAt: now };
 		}
 		return {};
 	};
 
-	const isTimeRangeValid = (range: { startAt?: number; endAt?: number }): boolean => {
-		if (selectedTimePreset !== 'custom') return true;
-		if (range.startAt !== undefined && range.endAt !== undefined) {
-			return range.startAt <= range.endAt;
-		}
-		return true;
-	};
+	const isTimeRangeValid = (_range: { startAt?: number; endAt?: number }): boolean => true;
+
+	const getFilterStateKey = (): string =>
+		JSON.stringify([
+			selectedUserId || '',
+			selectedGroupId || '',
+			selectedProvider || '',
+			selectedStatus || '',
+			selectedTimePreset || ''
+		]);
 
 	const shouldRefreshStatus = () => {
 		const normalized = String(selectedStatus || '').toUpperCase();
@@ -145,45 +136,26 @@
 		selectedGroupId = String(query.get('group_id') || '').trim();
 		selectedProvider = String(query.get('provider') || '').trim().toLowerCase();
 		selectedStatus = String(query.get('status') || '').trim().toUpperCase();
-		includeDeleted = ['1', 'true', 'yes', 'on'].includes(
-			String(query.get('include_deleted') || '')
-				.trim()
-				.toLowerCase()
-		);
 
 		const urlPreset = String(query.get('time_preset') || '').trim();
 		const supportedPreset = TIME_PRESET_OPTIONS.find((item) => item.value === urlPreset);
-		const urlStartAt = Number(query.get('start_at') || 0);
-		const urlEndAt = Number(query.get('end_at') || 0);
-
 		if (supportedPreset) {
 			selectedTimePreset = supportedPreset.value;
-		} else if (urlStartAt > 0 || urlEndAt > 0) {
-			selectedTimePreset = 'custom';
 		} else {
 			selectedTimePreset = '7d';
 		}
-
-		customStartAt = urlStartAt > 0 ? epochToDatetimeLocal(urlStartAt) : '';
-		customEndAt = urlEndAt > 0 ? epochToDatetimeLocal(urlEndAt) : '';
 	};
 
 	const writeFiltersToUrl = () => {
 		if (typeof window === 'undefined') return;
 
 		const query = new URLSearchParams();
-		const range = resolveTimeRange();
 
 		if (selectedUserId) query.set('user_id', selectedUserId);
 		if (selectedGroupId) query.set('group_id', selectedGroupId);
 		if (selectedProvider) query.set('provider', selectedProvider);
 		if (selectedStatus) query.set('status', selectedStatus);
-		if (includeDeleted) query.set('include_deleted', '1');
 		query.set('time_preset', selectedTimePreset);
-		if (selectedTimePreset === 'custom') {
-			if (range.startAt !== undefined) query.set('start_at', String(range.startAt));
-			if (range.endAt !== undefined) query.set('end_at', String(range.endAt));
-		}
 
 		const queryString = query.toString();
 		const nextUrl = `${window.location.pathname}${queryString ? `?${queryString}` : ''}`;
@@ -253,15 +225,15 @@
 			const result = await listGenerationTasks(localStorage.token, {
 				user_id: selectedUserId || undefined,
 				group_id: selectedGroupId || undefined,
-				provider: selectedProvider || undefined,
-				status: selectedStatus || undefined,
-				start_at: range.startAt,
-				end_at: range.endAt,
-				include_deleted: includeDeleted,
-				refresh_status: shouldRefreshStatus(),
-				offset,
-				limit: PAGE_SIZE
-			});
+					provider: selectedProvider || undefined,
+					status: selectedStatus || undefined,
+					start_at: range.startAt,
+					end_at: range.endAt,
+					include_deleted: false,
+					refresh_status: shouldRefreshStatus(),
+					offset,
+					limit: PAGE_SIZE
+				});
 
 			const rows = result.items;
 			totalTasks = result.total;
@@ -280,15 +252,41 @@
 		}
 	};
 
-	const queryTasks = async () => {
+	const applyFiltersNow = async ({ force = false }: { force?: boolean } = {}) => {
 		const range = resolveTimeRange();
 		if (!isTimeRangeValid(range)) {
 			toast.error('开始时间不能晚于结束时间');
 			return;
 		}
+
+		const filterKey = getFilterStateKey();
+		if (!force && filterKey === lastAppliedFilterKey) {
+			writeFiltersToUrl();
+			return;
+		}
 		writeFiltersToUrl();
 		await loadTaskProviders();
 		await resetAndLoadTasks();
+		lastAppliedFilterKey = getFilterStateKey();
+	};
+
+	const clearAutoApplyTimer = () => {
+		if (!autoApplyTimer) return;
+		clearTimeout(autoApplyTimer);
+		autoApplyTimer = null;
+	};
+
+	const scheduleAutoApply = () => {
+		if (!initialized) return;
+		clearAutoApplyTimer();
+		autoApplyTimer = setTimeout(() => {
+			void applyFiltersNow();
+		}, 200);
+	};
+
+	const refreshTasks = async () => {
+		clearAutoApplyTimer();
+		await applyFiltersNow({ force: true });
 	};
 
 	const refreshPreviewTask = async (task: GenerationTaskItem) => {
@@ -438,8 +436,12 @@
 
 	const copyText = async (text: string) => {
 		if (navigator?.clipboard?.writeText) {
-			await navigator.clipboard.writeText(text);
-			return;
+			try {
+				await navigator.clipboard.writeText(text);
+				return;
+			} catch (error) {
+				console.warn('clipboard.writeText failed, fallback to execCommand', error);
+			}
 		}
 
 		const textarea = document.createElement('textarea');
@@ -449,8 +451,28 @@
 		document.body.appendChild(textarea);
 		textarea.focus();
 		textarea.select();
-		document.execCommand('copy');
+		textarea.setSelectionRange(0, textarea.value.length);
+		const copied = document.execCommand('copy');
 		document.body.removeChild(textarea);
+		if (!copied) {
+			throw new Error('clipboard unavailable');
+		}
+	};
+
+	const isFailedTask = (task: GenerationTaskItem): boolean => {
+		const status = String(task.status || '').toUpperCase();
+		const archiveStatus = String(task.archive_status || '').toUpperCase();
+		return status === 'FAILED' || archiveStatus === 'FAILED';
+	};
+
+	const getFailureReason = (task: GenerationTaskItem): string => {
+		const errorMessage = String(task.error_message || '').trim();
+		if (errorMessage) return errorMessage;
+		const errorCode = String(task.error_code || '').trim();
+		if (errorCode) return `错误码: ${errorCode}`;
+		const archiveError = String(task.archive_error || '').trim();
+		if (archiveError) return archiveError;
+		return '暂无错误详情';
 	};
 
 	const copyPromptAndParams = async (task: GenerationTaskItem) => {
@@ -490,6 +512,16 @@
 
 	$: selectedTaskPromptSegments = selectedTask ? getPromptSegments(selectedTask) : [];
 	$: selectedTaskParamEntries = selectedTask ? getGenerationParamEntries(selectedTask) : [];
+	$: selectedTaskIsFailed = selectedTask ? isFailedTask(selectedTask) : false;
+	$: selectedTaskFailureReason = selectedTask ? getFailureReason(selectedTask) : '';
+	$: if (initialized) {
+		selectedUserId;
+		selectedGroupId;
+		selectedProvider;
+		selectedStatus;
+		selectedTimePreset;
+		scheduleAutoApply();
+	}
 
 	onMount(async () => {
 		const defaultUserId = String($user?.id || '').trim();
@@ -499,6 +531,12 @@
 		await loadTaskProviders();
 		writeFiltersToUrl();
 		await resetAndLoadTasks();
+		lastAppliedFilterKey = getFilterStateKey();
+		initialized = true;
+
+		return () => {
+			clearAutoApplyTimer();
+		};
 	});
 </script>
 
@@ -606,42 +644,12 @@
 					{/each}
 				</select>
 
-				{#if selectedTimePreset === 'custom'}
-					<input
-						class="task-input"
-						type="datetime-local"
-						bind:value={customStartAt}
-						on:keydown={(e) => {
-							if (e.key === 'Enter') {
-								queryTasks();
-							}
-						}}
-					/>
-					<input
-						class="task-input"
-						type="datetime-local"
-						bind:value={customEndAt}
-						on:keydown={(e) => {
-							if (e.key === 'Enter') {
-								queryTasks();
-							}
-						}}
-					/>
-				{/if}
+				<button class="task-refresh-square" on:click={refreshTasks} aria-label="refresh">
+					<Refresh className="size-4" />
+				</button>
 			</div>
 
 			<div class="task-filter-actions">
-				<label class="task-checkbox-wrap">
-					<input type="checkbox" bind:checked={includeDeleted} />
-					<span>包含已删除</span>
-				</label>
-
-				<button class="task-btn" on:click={queryTasks}>查询</button>
-
-				<button class="task-btn task-btn-icon" on:click={queryTasks} aria-label="refresh">
-					<Refresh className="size-4" />
-				</button>
-
 				<div class="task-count-line">当前显示 {tasks.length} / {totalTasks}</div>
 			</div>
 		</div>
@@ -820,10 +828,10 @@
 				</div>
 			</div>
 
-			<div class="task-detail-section">
-				<div class="task-detail-title">生成参数</div>
-				<div class="task-detail-body">
-					{#if selectedTaskParamEntries.length === 0}
+				<div class="task-detail-section">
+					<div class="task-detail-title">生成参数</div>
+					<div class="task-detail-body">
+						{#if selectedTaskParamEntries.length === 0}
 						<div class="task-detail-empty">暂无参数</div>
 					{:else}
 						<div class="task-param-grid">
@@ -832,11 +840,20 @@
 								<div class="task-param-value">{row[1]}</div>
 							{/each}
 						</div>
-					{/if}
+						{/if}
+					</div>
 				</div>
+
+				{#if selectedTaskIsFailed}
+					<div class="task-detail-section">
+						<div class="task-detail-title">失败原因</div>
+						<div class="task-detail-body">
+							<p class="task-prompt-text">{selectedTaskFailureReason}</p>
+						</div>
+					</div>
+				{/if}
 			</div>
-		</div>
-	{/if}
+		{/if}
 </Modal>
 
 <style>
@@ -854,27 +871,35 @@
 		margin-top: 0.55rem;
 	}
 
-	.task-select,
-	.task-input {
+	.task-select {
 		border-radius: 0.75rem;
 		border: 1px solid rgba(156, 163, 175, 0.35);
 		background: rgba(255, 255, 255, 0.7);
 		padding: 0.55rem 0.75rem;
 		font-size: 0.875rem;
+		height: 2.5rem;
 	}
 
-	:global(.dark) .task-select,
-	:global(.dark) .task-input {
+	:global(.dark) .task-select {
 		background: rgba(17, 24, 39, 0.7);
 		border-color: rgba(75, 85, 99, 0.45);
 	}
 
-	.task-checkbox-wrap {
+	.task-refresh-square {
+		border-radius: 0.75rem;
+		width: 2.5rem;
+		height: 2.5rem;
+		padding: 0;
 		display: inline-flex;
 		align-items: center;
-		gap: 0.35rem;
-		font-size: 0.8rem;
-		padding: 0 0.25rem;
+		justify-content: center;
+		border: 1px solid rgba(156, 163, 175, 0.35);
+		background: rgba(255, 255, 255, 0.75);
+	}
+
+	:global(.dark) .task-refresh-square {
+		background: rgba(17, 24, 39, 0.8);
+		border-color: rgba(75, 85, 99, 0.45);
 	}
 
 	.task-btn {
@@ -893,14 +918,6 @@
 	.task-btn:disabled {
 		opacity: 0.6;
 		cursor: not-allowed;
-	}
-
-	.task-btn-icon {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 2.15rem;
-		padding: 0;
 	}
 
 	.task-count-line {
