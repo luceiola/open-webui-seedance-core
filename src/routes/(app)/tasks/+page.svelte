@@ -434,29 +434,44 @@
 			(item) => item.url.startsWith('http://') || item.url.startsWith('https://')
 		);
 
+	const copyWithExecCommand = (text: string): boolean => {
+		try {
+			const textarea = document.createElement('textarea');
+			textarea.value = text;
+			textarea.setAttribute('readonly', 'readonly');
+			textarea.style.position = 'fixed';
+			textarea.style.top = '-9999px';
+			textarea.style.left = '-9999px';
+			textarea.style.opacity = '0';
+			document.body.appendChild(textarea);
+			textarea.focus();
+			textarea.select();
+			textarea.setSelectionRange(0, textarea.value.length);
+			const copied = document.execCommand('copy');
+			document.body.removeChild(textarea);
+			return Boolean(copied);
+		} catch (error) {
+			console.warn('execCommand copy failed', error);
+			return false;
+		}
+	};
+
 	const copyText = async (text: string) => {
+		// Try sync copy first to preserve user-gesture context in HTTP/intranet deployments.
+		if (copyWithExecCommand(text)) {
+			return;
+		}
+
 		if (navigator?.clipboard?.writeText) {
 			try {
 				await navigator.clipboard.writeText(text);
 				return;
 			} catch (error) {
-				console.warn('clipboard.writeText failed, fallback to execCommand', error);
+				console.warn('clipboard.writeText failed', error);
 			}
 		}
 
-		const textarea = document.createElement('textarea');
-		textarea.value = text;
-		textarea.style.position = 'fixed';
-		textarea.style.opacity = '0';
-		document.body.appendChild(textarea);
-		textarea.focus();
-		textarea.select();
-		textarea.setSelectionRange(0, textarea.value.length);
-		const copied = document.execCommand('copy');
-		document.body.removeChild(textarea);
-		if (!copied) {
-			throw new Error('clipboard unavailable');
-		}
+		throw new Error('clipboard unavailable');
 	};
 
 	const isFailedTask = (task: GenerationTaskItem): boolean => {
