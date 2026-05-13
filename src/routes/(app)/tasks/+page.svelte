@@ -9,14 +9,13 @@
 		downloadGenerationTask,
 		getGenerationTaskPreview,
 		listGenerationTaskGroups,
-		listGenerationTaskProviders,
-		listGenerationTaskUsers,
-		listGenerationTasks,
-		type GenerationTaskGroupItem,
-		type GenerationTaskItem,
-		type GenerationTaskPromptResourceItem,
-		type GenerationTaskUserItem
-	} from '$lib/apis/generation-tasks';
+			listGenerationTaskProviders,
+			listGenerationTaskUsers,
+			listGenerationTasks,
+			type GenerationTaskGroupItem,
+			type GenerationTaskItem,
+			type GenerationTaskUserItem
+		} from '$lib/apis/generation-tasks';
 
 	import UserMenu from '$lib/components/layout/Sidebar/UserMenu.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
@@ -429,11 +428,6 @@
 		return rows;
 	};
 
-	const getValidPromptResources = (task: GenerationTaskItem): GenerationTaskPromptResourceItem[] =>
-		(task.prompt_resources || []).filter(
-			(item) => item.url.startsWith('http://') || item.url.startsWith('https://')
-		);
-
 	const copyWithExecCommand = (text: string): boolean => {
 		try {
 			const textarea = document.createElement('textarea');
@@ -490,36 +484,15 @@
 		return '暂无错误详情';
 	};
 
-	const copyPromptAndParams = async (task: GenerationTaskItem) => {
-		const lines: string[] = [];
-		lines.push(`任务ID: ${task.task_id}`);
-		lines.push(`用户: ${task.user_name || task.user_id || '-'}`);
-		lines.push(`状态: ${statusLabel(task.status)} / ${statusLabel(task.archive_status)}`);
-		lines.push('');
-		lines.push('提示词:');
-		lines.push(task.prompt_text && String(task.prompt_text).trim() ? String(task.prompt_text) : '（空）');
-
-		const params = getGenerationParamEntries(task);
-		if (params.length > 0) {
-			lines.push('');
-			lines.push('生成参数:');
-			params.forEach(([key, value]) => {
-				lines.push(`- ${key}: ${value}`);
-			});
+	const copyPromptText = async (task: GenerationTaskItem) => {
+		const prompt = String(task.prompt_text || '').trim();
+		if (!prompt) {
+			toast.error('提示词为空，无法复制');
+			return;
 		}
-
-		const resources = getValidPromptResources(task);
-		if (resources.length > 0) {
-			lines.push('');
-			lines.push('资源URL:');
-			resources.forEach((item) => {
-				lines.push(`- @${item.name}: ${item.url}`);
-			});
-		}
-
 		try {
-			await copyText(lines.join('\n'));
-			toast.success('已复制提示词与参数');
+			await copyText(prompt);
+			toast.success('已复制提示词');
 		} catch (error) {
 			toast.error(`复制失败: ${error}`);
 		}
@@ -761,32 +734,21 @@
 		<div class="p-4">
 			<div class="flex items-center justify-between gap-3 mb-3">
 				<div class="text-sm font-medium truncate">{selectedTask.task_id}</div>
-				<div class="flex items-center gap-2">
-					<button
-						type="button"
-						class="task-icon-btn modal-icon"
-						disabled={!selectedTask.download_ready}
+					<div class="flex items-center gap-2">
+						<button
+							type="button"
+							class="task-icon-btn modal-icon"
+							disabled={!selectedTask.download_ready}
 						on:click={() => {
 							handleDownload(selectedTask);
 						}}
-						aria-label="download"
-					>
-						<Download className="size-4" />
-					</button>
+							aria-label="download"
+						>
+							<Download className="size-4" />
+						</button>
 
-					<button
-						type="button"
-						class="task-icon-btn modal-icon"
-						on:click={() => {
-							copyPromptAndParams(selectedTask);
-						}}
-						aria-label="copy"
-					>
-						<Clipboard className="size-4" />
-					</button>
-
-					{#if selectedTask.can_delete}
-						<button
+						{#if selectedTask.can_delete}
+							<button
 							type="button"
 							class="task-icon-btn modal-icon danger"
 							on:click={() => {
@@ -824,11 +786,25 @@
 				{/if}
 			</div>
 
-			<div class="task-detail-section">
-				<div class="task-detail-title">提示词</div>
-				<div class="task-detail-body">
-					{#if selectedTaskPromptSegments.length === 0}
-						<div class="task-detail-empty">暂无提示词</div>
+				<div class="task-detail-section">
+					<div class="task-detail-title task-detail-title-row">
+						<span>提示词</span>
+						<button
+							type="button"
+							class="task-title-copy-btn"
+							disabled={!selectedTask.prompt_text || !String(selectedTask.prompt_text).trim()}
+							on:click={() => {
+								copyPromptText(selectedTask);
+							}}
+							aria-label="copy-prompt"
+						>
+							<Clipboard className="size-3.5" />
+							<span>复制提示词</span>
+						</button>
+					</div>
+					<div class="task-detail-body">
+						{#if selectedTaskPromptSegments.length === 0}
+							<div class="task-detail-empty">暂无提示词</div>
 					{:else}
 						<p class="task-prompt-text">
 							{#each selectedTaskPromptSegments as segment, idx (`prompt-${selectedTask.task_id}-${idx}`)}
@@ -1077,8 +1053,38 @@
 		background: rgba(243, 244, 246, 0.7);
 	}
 
+	.task-detail-title-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.5rem;
+	}
+
+	.task-title-copy-btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.3rem;
+		font-size: 0.74rem;
+		font-weight: 500;
+		line-height: 1;
+		padding: 0.3rem 0.45rem;
+		border-radius: 0.55rem;
+		border: 1px solid rgba(156, 163, 175, 0.45);
+		background: rgba(255, 255, 255, 0.75);
+	}
+
+	.task-title-copy-btn:disabled {
+		opacity: 0.55;
+		cursor: not-allowed;
+	}
+
 	:global(.dark) .task-detail-title {
 		background: rgba(31, 41, 55, 0.65);
+	}
+
+	:global(.dark) .task-title-copy-btn {
+		border-color: rgba(75, 85, 99, 0.55);
+		background: rgba(17, 24, 39, 0.75);
 	}
 
 	.task-detail-body {
