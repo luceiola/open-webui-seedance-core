@@ -24,7 +24,6 @@
 	import Download from '$lib/components/icons/Download.svelte';
 	import GarbageBin from '$lib/components/icons/GarbageBin.svelte';
 	import Refresh from '$lib/components/icons/Refresh.svelte';
-	import Clipboard from '$lib/components/icons/Clipboard.svelte';
 
 	const i18n = getContext('i18n');
 
@@ -428,46 +427,6 @@
 		return rows;
 	};
 
-	const copyWithExecCommand = (text: string): boolean => {
-		try {
-			const textarea = document.createElement('textarea');
-			textarea.value = text;
-			textarea.setAttribute('readonly', 'readonly');
-			textarea.style.position = 'fixed';
-			textarea.style.top = '-9999px';
-			textarea.style.left = '-9999px';
-			textarea.style.opacity = '0';
-			document.body.appendChild(textarea);
-			textarea.focus();
-			textarea.select();
-			textarea.setSelectionRange(0, textarea.value.length);
-			const copied = document.execCommand('copy');
-			document.body.removeChild(textarea);
-			return Boolean(copied);
-		} catch (error) {
-			console.warn('execCommand copy failed', error);
-			return false;
-		}
-	};
-
-	const copyText = async (text: string) => {
-		// Try sync copy first to preserve user-gesture context in HTTP/intranet deployments.
-		if (copyWithExecCommand(text)) {
-			return;
-		}
-
-		if (navigator?.clipboard?.writeText) {
-			try {
-				await navigator.clipboard.writeText(text);
-				return;
-			} catch (error) {
-				console.warn('clipboard.writeText failed', error);
-			}
-		}
-
-		throw new Error('clipboard unavailable');
-	};
-
 	const isFailedTask = (task: GenerationTaskItem): boolean => {
 		const status = String(task.status || '').toUpperCase();
 		const archiveStatus = String(task.archive_status || '').toUpperCase();
@@ -482,20 +441,6 @@
 		const archiveError = String(task.archive_error || '').trim();
 		if (archiveError) return archiveError;
 		return '暂无错误详情';
-	};
-
-	const copyPromptText = async (task: GenerationTaskItem) => {
-		const prompt = String(task.prompt_text || '').trim();
-		if (!prompt) {
-			toast.error('提示词为空，无法复制');
-			return;
-		}
-		try {
-			await copyText(prompt);
-			toast.success('已复制提示词');
-		} catch (error) {
-			toast.error(`复制失败: ${error}`);
-		}
 	};
 
 	$: selectedTaskPromptSegments = selectedTask ? getPromptSegments(selectedTask) : [];
@@ -787,21 +732,7 @@
 			</div>
 
 				<div class="task-detail-section">
-					<div class="task-detail-title task-detail-title-row">
-						<span>提示词</span>
-						<button
-							type="button"
-							class="task-title-copy-btn"
-							disabled={!selectedTask.prompt_text || !String(selectedTask.prompt_text).trim()}
-							on:click={() => {
-								copyPromptText(selectedTask);
-							}}
-							aria-label="copy-prompt"
-						>
-							<Clipboard className="size-3.5" />
-							<span>复制提示词</span>
-						</button>
-					</div>
+					<div class="task-detail-title">提示词</div>
 					<div class="task-detail-body">
 						{#if selectedTaskPromptSegments.length === 0}
 							<div class="task-detail-empty">暂无提示词</div>
@@ -1053,38 +984,8 @@
 		background: rgba(243, 244, 246, 0.7);
 	}
 
-	.task-detail-title-row {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.5rem;
-	}
-
-	.task-title-copy-btn {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.3rem;
-		font-size: 0.74rem;
-		font-weight: 500;
-		line-height: 1;
-		padding: 0.3rem 0.45rem;
-		border-radius: 0.55rem;
-		border: 1px solid rgba(156, 163, 175, 0.45);
-		background: rgba(255, 255, 255, 0.75);
-	}
-
-	.task-title-copy-btn:disabled {
-		opacity: 0.55;
-		cursor: not-allowed;
-	}
-
 	:global(.dark) .task-detail-title {
 		background: rgba(31, 41, 55, 0.65);
-	}
-
-	:global(.dark) .task-title-copy-btn {
-		border-color: rgba(75, 85, 99, 0.55);
-		background: rgba(17, 24, 39, 0.75);
 	}
 
 	.task-detail-body {
