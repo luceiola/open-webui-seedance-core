@@ -13,3 +13,4 @@
 - 版本注册：`templates/versions/registry.json`
 - 路由注册：`config/seedance_routing_registry.yaml`
 - 发布门禁：`templates/docs/工具版本与发布门禁.md`
+- 单文件导入打包：`scripts/seedance/build_standalone_tools.py`

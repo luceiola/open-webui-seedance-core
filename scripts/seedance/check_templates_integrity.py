@@ -4,27 +4,35 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VERSIONS_REGISTRY = REPO_ROOT / "templates" / "versions" / "registry.json"
 ROUTING_REGISTRY = REPO_ROOT / "config" / "seedance_routing_registry.yaml"
+BUILD_SCRIPT = REPO_ROOT / "scripts" / "seedance" / "build_standalone_tools.py"
 
 
 def _load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _check_import_sync(component_id: str, tool_file: Path, import_file: Path, errors: list[str]) -> None:
-    if not tool_file.exists():
-        errors.append(f"[{component_id}] missing tool file: {tool_file}")
+def _check_import_sync(
+    component_id: str,
+    content_file: Path,
+    import_file: Path,
+    errors: list[str],
+) -> None:
+    if not content_file.exists():
+        errors.append(f"[{component_id}] missing expected content file: {content_file}")
         return
     if not import_file.exists():
         errors.append(f"[{component_id}] missing import file: {import_file}")
         return
 
-    tool_content = tool_file.read_text(encoding="utf-8")
+    tool_content = content_file.read_text(encoding="utf-8")
     import_obj = _load_json(import_file)
     if not isinstance(import_obj, list) or not import_obj:
         errors.append(f"[{component_id}] import file format must be non-empty JSON list: {import_file}")
@@ -38,7 +46,7 @@ def _check_import_sync(component_id: str, tool_file: Path, import_file: Path, er
 
     if import_content != tool_content:
         errors.append(
-            f"[{component_id}] import content mismatch: {import_file} is out of sync with {tool_file}"
+            f"[{component_id}] import content mismatch: {import_file} is out of sync with {content_file}"
         )
 
 
@@ -126,11 +134,34 @@ def _check_routing_registry(errors: list[str]) -> None:
         seen.add(rule_id)
 
 
+def _check_standalone_bundle(errors: list[str]) -> None:
+    if not BUILD_SCRIPT.exists():
+        errors.append(f"missing standalone build script: {BUILD_SCRIPT}")
+        return
+
+    result = subprocess.run(
+        [sys.executable, str(BUILD_SCRIPT)],
+        cwd=str(REPO_ROOT),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return
+
+    output = (result.stdout or "").strip()
+    err = (result.stderr or "").strip()
+    reason = err or output or "unknown error"
+    errors.append(f"standalone bundle check failed: {reason}")
+
+
 def run_checks() -> list[str]:
     errors: list[str] = []
 
     if not VERSIONS_REGISTRY.exists():
         return [f"missing versions registry: {VERSIONS_REGISTRY}"]
+
+    _check_standalone_bundle(errors)
 
     versions_obj = _load_json(VERSIONS_REGISTRY)
     components = versions_obj.get("components") if isinstance(versions_obj, dict) else None
@@ -143,9 +174,11 @@ def run_checks() -> list[str]:
             continue
 
         tool_meta = meta.get("tool") if isinstance(meta.get("tool"), dict) else {}
+        standalone_file = REPO_ROOT / str(tool_meta.get("standalone_file") or "")
         tool_file = REPO_ROOT / str(tool_meta.get("file") or "")
+        content_file = standalone_file if str(tool_meta.get("standalone_file") or "").strip() else tool_file
         import_file = REPO_ROOT / str(tool_meta.get("import_file") or "")
-        _check_import_sync(component_id, tool_file, import_file, errors)
+        _check_import_sync(component_id, content_file, import_file, errors)
         _check_skill_prompt_headers(component_id, meta, errors)
 
     _check_routing_registry(errors)

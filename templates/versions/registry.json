@@ -1,12 +1,13 @@
 {
   "version": "v1.0.0",
-  "updated_at": "2026-05-18T12:00:00+08:00",
+  "updated_at": "2026-05-18T13:30:00+08:00",
   "components": {
     "seedance_material_package": {
       "tool": {
         "file": "templates/seedance_material_package_tool.py",
         "import_file": "templates/seedance_material_package_tool_v2.import.json",
-        "version": "0.2.2"
+        "version": "0.2.2",
+        "standalone_file": "templates/dist/seedance_material_package_tool.py"
       },
       "skill": {
         "file": "templates/skills/seedance-execution-skill/SKILL.md",
@@ -21,7 +22,8 @@
       "tool": {
         "file": "templates/happyhorse_media_tool.py",
         "import_file": "templates/happyhorse_media_tool_v1.import.json",
-        "version": "0.1.0"
+        "version": "0.1.0",
+        "standalone_file": "templates/dist/happyhorse_media_tool.py"
       },
       "skill": {
         "file": "templates/skills/happyhorse-execution-skill/SKILL.md",
@@ -36,7 +38,8 @@
       "tool": {
         "file": "templates/gpt_image2_media_tool.py",
         "import_file": "templates/gpt_image2_media_tool_v1.import.json",
-        "version": "0.1.0"
+        "version": "0.1.0",
+        "standalone_file": "templates/dist/gpt_image2_media_tool.py"
       },
       "skill": {
         "file": "templates/skills/gpt-image2-execution-skill/SKILL.md",
@@ -51,7 +54,8 @@
       "tool": {
         "file": "templates/doubao_seed_prompt_tool.py",
         "import_file": "templates/doubao_seed_prompt_tool_v1.import.json",
-        "version": "0.4.0"
+        "version": "0.4.0",
+        "standalone_file": "templates/dist/doubao_seed_prompt_tool.py"
       },
       "skill": {
         "file": "templates/skills/doubao-seed-prompt-execution-skill/SKILL.md",
