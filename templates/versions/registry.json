@@ -1,0 +1,66 @@
+{
+  "version": "v1.0.0",
+  "updated_at": "2026-05-18T12:00:00+08:00",
+  "components": {
+    "seedance_material_package": {
+      "tool": {
+        "file": "templates/seedance_material_package_tool.py",
+        "import_file": "templates/seedance_material_package_tool_v2.import.json",
+        "version": "0.2.2"
+      },
+      "skill": {
+        "file": "templates/skills/seedance-execution-skill/SKILL.md",
+        "version": "v1.1.6"
+      },
+      "system_prompt": {
+        "file": "templates/prompts/seedance_system_prompt.txt",
+        "version": "v1.1.6"
+      }
+    },
+    "happyhorse_media": {
+      "tool": {
+        "file": "templates/happyhorse_media_tool.py",
+        "import_file": "templates/happyhorse_media_tool_v1.import.json",
+        "version": "0.1.0"
+      },
+      "skill": {
+        "file": "templates/skills/happyhorse-execution-skill/SKILL.md",
+        "version": "v1.1.6"
+      },
+      "system_prompt": {
+        "file": "templates/prompts/happyhorse_system_prompt.txt",
+        "version": "v1.1.6"
+      }
+    },
+    "gpt_image2_media": {
+      "tool": {
+        "file": "templates/gpt_image2_media_tool.py",
+        "import_file": "templates/gpt_image2_media_tool_v1.import.json",
+        "version": "0.1.0"
+      },
+      "skill": {
+        "file": "templates/skills/gpt-image2-execution-skill/SKILL.md",
+        "version": "v1.1.6"
+      },
+      "system_prompt": {
+        "file": "templates/prompts/gpt_image2_system_prompt.txt",
+        "version": "v1.1.6"
+      }
+    },
+    "doubao_seed_prompt": {
+      "tool": {
+        "file": "templates/doubao_seed_prompt_tool.py",
+        "import_file": "templates/doubao_seed_prompt_tool_v1.import.json",
+        "version": "0.4.0"
+      },
+      "skill": {
+        "file": "templates/skills/doubao-seed-prompt-execution-skill/SKILL.md",
+        "version": "v1.1.6"
+      },
+      "system_prompt": {
+        "file": "templates/prompts/doubao_seed_prompt_system_prompt.txt",
+        "version": "v1.1.6"
+      }
+    }
+  }
+}

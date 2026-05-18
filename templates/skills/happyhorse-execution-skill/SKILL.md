@@ -1,6 +1,9 @@
 ---
 name: happyhorse-execution-skill
 description: HappyHorse 参考生视频执行规范。仅使用 %素材路径 引用图片，先校验后提交任务，默认异步返回 task_id。
+version: v1.1.6
+routing_registry: config/seedance_routing_registry.yaml
+version_registry: templates/versions/registry.json
 ---
 
 # HappyHorse Execution Skill

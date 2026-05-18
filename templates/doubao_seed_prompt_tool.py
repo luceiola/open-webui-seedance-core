@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote, urlencode
@@ -19,12 +20,37 @@ import httpx
 from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field
 
+_TOOL_DIR = Path(__file__).resolve().parent
+if str(_TOOL_DIR) not in sys.path:
+    sys.path.append(str(_TOOL_DIR))
+
+from shared.template_registry import (
+    DEFAULT_MISSING_FIELD_POLICY as SHARED_DEFAULT_MISSING_FIELD_POLICY,
+    DEFAULT_STORYBOARD_TEMPLATE_ID as SHARED_DEFAULT_STORYBOARD_TEMPLATE_ID,
+    TEMPLATE_REGISTRY as SHARED_TEMPLATE_REGISTRY,
+    list_template_catalog,
+    match_template,
+    normalize_template_id,
+)
+from shared.toolkit import (
+    build_auth_headers,
+    build_base_url,
+    compact_media_asset_item,
+    extract_media_asset_references,
+    extract_request_id,
+    normalize_httpx_error,
+    request_openwebui_json,
+)
+
 
 class Tools:
     VIDEO_FPS_MIN = 0.2
     VIDEO_FPS_MAX = 5.0
     IMAGE_MIN_PIXELS_FLOOR = 196
     IMAGE_MAX_PIXELS_CEILING = 36_000_000
+    DEFAULT_STORYBOARD_TEMPLATE_ID = SHARED_DEFAULT_STORYBOARD_TEMPLATE_ID
+    DEFAULT_MISSING_FIELD_POLICY = SHARED_DEFAULT_MISSING_FIELD_POLICY
+    TEMPLATE_REGISTRY: dict[str, dict[str, Any]] = SHARED_TEMPLATE_REGISTRY
 
     class Valves(BaseModel):
         OPENWEBUI_BASE_URL: str = Field(
@@ -158,78 +184,20 @@ class Tools:
         self.valves = self.Valves()
 
     def _base_url(self, __request__: Optional[Request]) -> str:
-        if __request__ is not None and __request__.url is not None:
-            return f"{__request__.url.scheme}://{__request__.url.netloc}"
-        return self.valves.OPENWEBUI_BASE_URL.rstrip("/")
+        return build_base_url(__request__, self.valves.OPENWEBUI_BASE_URL)
 
     def _headers(self, __request__: Optional[Request]) -> dict[str, str]:
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-
-        if __request__ is not None:
-            auth_header = __request__.headers.get("Authorization")
-            if auth_header:
-                headers["Authorization"] = auth_header
-                return headers
-
-            token_cookie = __request__.cookies.get("token")
-            if token_cookie:
-                headers["Authorization"] = f"Bearer {token_cookie}"
-                return headers
-
-        if self.valves.OPENWEBUI_API_KEY:
-            headers["Authorization"] = f"Bearer {self.valves.OPENWEBUI_API_KEY}"
-
-        return headers
+        return build_auth_headers(
+            __request__,
+            self.valves.OPENWEBUI_API_KEY,
+            include_content_type=True,
+        )
 
     def _extract_request_id(self, text: str) -> Optional[str]:
-        if not text:
-            return None
-        m = re.search(r"request[_ ]id\s*[:=]\s*([A-Za-z0-9_-]+)", text, flags=re.IGNORECASE)
-        return m.group(1) if m else None
+        return extract_request_id(text)
 
     def _normalize_error(self, response: httpx.Response) -> dict[str, Any]:
-        raw_text = response.text
-        error_code: Optional[str] = None
-        error_message: Optional[str] = None
-        request_id: Optional[str] = None
-
-        try:
-            payload = response.json()
-        except Exception:
-            payload = None
-
-        if isinstance(payload, dict):
-            detail = payload.get("detail")
-            if isinstance(detail, dict):
-                error_code = detail.get("code")
-                error_message = detail.get("message") or detail.get("error")
-                request_id = detail.get("request_id")
-            elif isinstance(detail, str):
-                error_message = detail
-
-            if isinstance(payload.get("error"), dict):
-                err = payload.get("error") or {}
-                error_code = error_code or err.get("code")
-                error_message = error_message or err.get("message")
-                request_id = request_id or err.get("request_id")
-
-            error_code = error_code or payload.get("code")
-            error_message = error_message or payload.get("message")
-            request_id = request_id or payload.get("request_id")
-
-        if not error_message:
-            error_message = raw_text
-        if not request_id:
-            request_id = self._extract_request_id(error_message or "")
-
-        return {
-            "ok": False,
-            "status_code": response.status_code,
-            "error": raw_text,
-            "error_code": error_code,
-            "error_message": error_message,
-            "request_id": request_id,
-        }
+        return normalize_httpx_error(response)
 
     def _normalize_http_exception(self, exc: HTTPException) -> dict[str, Any]:
         status_code = int(exc.status_code or 500)
@@ -365,24 +333,15 @@ class Tools:
         body: Optional[dict[str, Any]] = None,
         __request__: Optional[Request],
     ) -> dict[str, Any]:
-        url = f"{self._base_url(__request__).rstrip('/')}{path}"
-        headers = self._headers(__request__)
-
-        request_kwargs: dict[str, Any] = {}
-        if body is not None:
-            request_kwargs["json"] = body
-
-        async with httpx.AsyncClient(timeout=self.valves.REQUEST_TIMEOUT_SECONDS, trust_env=False) as client:
-            response = await client.request(method=method, url=url, headers=headers, **request_kwargs)
-
-        if response.status_code >= 400:
-            return self._normalize_error(response)
-
-        try:
-            payload = response.json()
-        except Exception:
-            payload = {"raw_text": response.text}
-        return {"ok": True, "status_code": response.status_code, "data": payload}
+        return await request_openwebui_json(
+            method=method,
+            path=path,
+            __request__=__request__,
+            timeout_seconds=self.valves.REQUEST_TIMEOUT_SECONDS,
+            openwebui_base_url=self.valves.OPENWEBUI_BASE_URL,
+            openwebui_api_key=self.valves.OPENWEBUI_API_KEY,
+            body=body,
+        )
 
     def _split_csv_values(self, raw: str) -> list[str]:
         values = [item.strip() for item in str(raw or "").split(",")]
@@ -709,31 +668,49 @@ class Tools:
             return token or None
         return None
 
+    def _looks_like_media_reference_name(self, raw: str) -> bool:
+        value = str(raw or "").strip()
+        if not value:
+            return False
+        lowered = value.lower()
+        if lowered.startswith(("asset_", "http://", "https://", "data:", "file_id://", "asset://", "tos://")):
+            return False
+        if re.fullmatch(r"[a-z0-9_-]{16,}", lowered):
+            return False
+        return any(ch in value for ch in (".", "/", "\\"))
+
+    def _normalize_media_reference_inputs(
+        self,
+        *,
+        asset_id: str,
+        ref_url: str,
+    ) -> tuple[str, str, Optional[str]]:
+        aid = str(asset_id or "").strip()
+        raw_url = str(ref_url or "").strip()
+        ref_token = self._normalize_reference_token(raw_url)
+
+        if aid and not raw_url:
+            # Tolerate common tool-call mapping mistakes:
+            # 1) user passed %reference_name into *_asset_id
+            # 2) user passed filename/reference-name into *_asset_id
+            token_from_asset = self._normalize_reference_token(aid)
+            if token_from_asset:
+                raw_url = aid
+                aid = ""
+                ref_token = token_from_asset
+            elif self._looks_like_media_reference_name(aid):
+                cleaned = aid.rstrip(".,;:!?)\\]}>'\"，。；：！？】）》")
+                if cleaned:
+                    aid = ""
+                    ref_token = cleaned
+
+        return aid, raw_url, ref_token
+
     def _extract_media_asset_references(self, prompt: str) -> list[str]:
-        refs = re.findall(r"%([^\s%,，。；;:：!！?？)）\]】}》>\"“”'`]+)", prompt or "")
-        cleaned: list[str] = []
-        for ref in refs:
-            value = str(ref).strip().rstrip(".,;:!?)\\]}>'\"，。；：！？】）》")
-            if value:
-                cleaned.append(value)
-        return list(dict.fromkeys(cleaned))
+        return extract_media_asset_references(prompt)
 
     def _compact_media_asset_item(self, item: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "asset_id": item.get("asset_id"),
-            "display_name": item.get("display_name"),
-            "relative_path": item.get("relative_path"),
-            "original_filename": item.get("original_filename"),
-            "media_type": item.get("media_type"),
-            "mime_type": item.get("mime_type"),
-            "size_bytes": item.get("size_bytes"),
-            "status": item.get("status"),
-            "chat_id": item.get("chat_id"),
-            "tos_key": item.get("tos_key"),
-            "tos_status": item.get("tos_status"),
-            "created_at": item.get("created_at"),
-            "updated_at": item.get("updated_at"),
-        }
+        return compact_media_asset_item(item)
 
     def _normalize_description_granularity(self, value: str) -> str:
         raw = str(value or "").strip().lower()
@@ -811,6 +788,294 @@ class Tools:
         if not normalized:
             normalized = ["overall"]
         return list(dict.fromkeys(normalized))
+
+    def _list_template_catalog(self) -> list[dict[str, Any]]:
+        return list_template_catalog()
+
+    def _normalize_template_id(self, value: str) -> Optional[str]:
+        normalized = normalize_template_id(value)
+        return normalized or None
+
+    def _match_template_from_request(
+        self,
+        *,
+        description_request: str,
+        template_id: str,
+        enforce_template_output: bool,
+    ) -> Optional[dict[str, Any]]:
+        return match_template(
+            description_request=description_request,
+            template_id=template_id,
+            enforce_template_output=enforce_template_output,
+        )
+
+    def _normalize_template_text_value(self, value: Any, *, missing_policy: str) -> str:
+        if isinstance(value, str):
+            text = value.strip()
+            return text or missing_policy
+        if isinstance(value, (int, float)):
+            text = str(value).strip()
+            return text or missing_policy
+        if isinstance(value, list):
+            rows = [str(item).strip() for item in value if str(item).strip()]
+            if rows:
+                return "；".join(rows)
+        return missing_policy
+
+    def _pick_template_value(self, source: dict[str, Any], keys: list[str]) -> Any:
+        for key in keys:
+            if key in source:
+                value = source.get(key)
+                if value is None:
+                    continue
+                if isinstance(value, str) and not value.strip():
+                    continue
+                if isinstance(value, list) and not value:
+                    continue
+                if isinstance(value, dict) and not value:
+                    continue
+                return value
+        return None
+
+    def _coerce_dict_rows(self, value: Any) -> list[dict[str, Any]]:
+        if isinstance(value, dict):
+            return [value]
+        if isinstance(value, list):
+            rows: list[dict[str, Any]] = []
+            for item in value:
+                if isinstance(item, dict):
+                    rows.append(item)
+            return rows
+        return []
+
+    def _normalize_storyboard_structured(
+        self,
+        *,
+        payload: Optional[dict[str, Any]],
+        provider_text: str,
+        missing_policy: str,
+    ) -> dict[str, Any]:
+        source = payload if isinstance(payload, dict) else {}
+        is_empty_source = not source
+
+        video_type = self._normalize_template_text_value(
+            self._pick_template_value(source, ["视频类型", "video_type", "videoType", "type"]),
+            missing_policy=missing_policy,
+        )
+        total_duration = self._normalize_template_text_value(
+            self._pick_template_value(source, ["总时长", "total_duration", "duration"]),
+            missing_policy=missing_policy,
+        )
+        core_theme = self._normalize_template_text_value(
+            self._pick_template_value(source, ["核心主题", "core_theme", "theme"]),
+            missing_policy=missing_policy,
+        )
+        scene_summary = self._normalize_template_text_value(
+            self._pick_template_value(source, ["场景概况", "scene_summary", "scene"]),
+            missing_policy=missing_policy,
+        )
+        environment_value = self._pick_template_value(source, ["环境描述", "environment", "environment_description"])
+        if environment_value is None and is_empty_source:
+            environment_value = self._clip_text(provider_text, 800)
+        environment_description = self._normalize_template_text_value(
+            environment_value,
+            missing_policy=missing_policy,
+        )
+
+        people_rows = self._coerce_dict_rows(
+            self._pick_template_value(source, ["人物设定", "人物列表", "people", "characters"])
+        )
+        if not people_rows:
+            people_rows = [{}]
+        normalized_people: list[dict[str, Any]] = []
+        for idx, row in enumerate(people_rows, start=1):
+            person_id_raw = self._pick_template_value(row, ["人物ID", "person_id", "id", "character_id"])
+            if person_id_raw is None:
+                person_id = str(idx)
+            else:
+                person_id = self._normalize_template_text_value(person_id_raw, missing_policy=missing_policy)
+            normalized_people.append(
+                {
+                    "人物ID": person_id,
+                    "人物名称": self._normalize_template_text_value(
+                        self._pick_template_value(row, ["人物名称", "name", "character_name"]),
+                        missing_policy=missing_policy,
+                    ),
+                    "年龄/性别": self._normalize_template_text_value(
+                        self._pick_template_value(row, ["年龄/性别", "age_gender", "ageGender"]),
+                        missing_policy=missing_policy,
+                    ),
+                    "外貌特征": self._normalize_template_text_value(
+                        self._pick_template_value(row, ["外貌特征", "appearance", "look"]),
+                        missing_policy=missing_policy,
+                    ),
+                    "性格标签": self._normalize_template_text_value(
+                        self._pick_template_value(row, ["性格标签", "personality", "traits"]),
+                        missing_policy=missing_policy,
+                    ),
+                }
+            )
+
+        shot_rows = self._coerce_dict_rows(
+            self._pick_template_value(source, ["分镜详细内容", "分镜", "shots", "storyboard"])
+        )
+        if not shot_rows:
+            shot_rows = [{}]
+        normalized_shots: list[dict[str, Any]] = []
+        for idx, row in enumerate(shot_rows, start=1):
+            shot_id_raw = self._pick_template_value(row, ["镜号", "shot_id", "shot", "id"])
+            if shot_id_raw is None:
+                shot_id = str(idx)
+            else:
+                shot_id = self._normalize_template_text_value(shot_id_raw, missing_policy=missing_policy)
+            normalized_shots.append(
+                {
+                    "镜号": shot_id,
+                    "景别": self._normalize_template_text_value(
+                        self._pick_template_value(row, ["景别", "shot_size", "framing"]),
+                        missing_policy=missing_policy,
+                    ),
+                    "画面内容": self._normalize_template_text_value(
+                        self._pick_template_value(row, ["画面内容", "content", "visual_content"]),
+                        missing_policy=missing_policy,
+                    ),
+                    "运镜方式": self._normalize_template_text_value(
+                        self._pick_template_value(row, ["运镜方式", "camera_movement", "camera_motion"]),
+                        missing_policy=missing_policy,
+                    ),
+                    "时长": self._normalize_template_text_value(
+                        self._pick_template_value(row, ["时长", "duration"]),
+                        missing_policy=missing_policy,
+                    ),
+                    "台词/旁白": self._normalize_template_text_value(
+                        self._pick_template_value(row, ["台词/旁白", "dialogue_voiceover", "dialogue", "voiceover"]),
+                        missing_policy=missing_policy,
+                    ),
+                    "音效": self._normalize_template_text_value(
+                        self._pick_template_value(row, ["音效", "sound_effects", "audio"]),
+                        missing_policy=missing_policy,
+                    ),
+                }
+            )
+
+        video_name = self._normalize_template_text_value(
+            self._pick_template_value(source, ["视频名称", "video_name", "title"]),
+            missing_policy=missing_policy,
+        )
+        target_audience = self._normalize_template_text_value(
+            self._pick_template_value(source, ["目标受众", "target_audience", "audience"]),
+            missing_policy=missing_policy,
+        )
+
+        return {
+            "视频类型": video_type,
+            "总时长": total_duration,
+            "核心主题": core_theme,
+            "场景概况": scene_summary,
+            "环境描述": environment_description,
+            "人物设定": normalized_people,
+            "分镜详细内容": normalized_shots,
+            "视频名称": video_name,
+            "目标受众": target_audience,
+        }
+
+    def _render_storyboard_template_text(self, structured: dict[str, Any]) -> str:
+        people_rows = self._coerce_dict_rows(structured.get("人物设定"))
+        shot_rows = self._coerce_dict_rows(structured.get("分镜详细内容"))
+        lines: list[str] = []
+        lines.append("### 专业视频分镜脚本模板")
+        lines.append("")
+        lines.append("##### 一、核心基础信息")
+        lines.append(f"- 视频类型：{structured.get('视频类型')}")
+        lines.append(f"- 总时长：{structured.get('总时长')}")
+        lines.append(f"- 核心主题：{structured.get('核心主题')}")
+        lines.append("")
+        lines.append("##### 二、整体场景设定")
+        lines.append(f"- 场景概况：{structured.get('场景概况')}")
+        lines.append(f"- 环境描述：{structured.get('环境描述')}")
+        lines.append("")
+        lines.append("##### 三、专业人物设定")
+        for row in people_rows:
+            lines.append(f"- 人物ID：{row.get('人物ID')}")
+            lines.append(f"- 人物名称：{row.get('人物名称')}")
+            lines.append(f"- 年龄/性别：{row.get('年龄/性别')}")
+            lines.append(f"- 外貌特征：{row.get('外貌特征')}")
+            lines.append(f"- 性格标签：{row.get('性格标签')}")
+        lines.append("")
+        lines.append("##### 四、分镜详细内容")
+        for row in shot_rows:
+            lines.append(f"- 镜号：{row.get('镜号')}")
+            lines.append(f"- 景别：{row.get('景别')}")
+            lines.append(f"- 画面内容：{row.get('画面内容')}")
+            lines.append(f"- 运镜方式：{row.get('运镜方式')}")
+            lines.append(f"- 时长：{row.get('时长')}")
+            lines.append(f"- 台词/旁白：{row.get('台词/旁白')}")
+            lines.append(f"- 音效：{row.get('音效')}")
+        lines.append("")
+        lines.append("#### 后处理")
+        lines.append(f"- 视频名称：{structured.get('视频名称')}")
+        lines.append(f"- 目标受众：{structured.get('目标受众')}")
+        return "\n".join(lines).strip()
+
+    def _build_storyboard_template_messages(
+        self,
+        *,
+        language: str,
+        template_id: str,
+        description_request: str,
+        reference_blocks: list[dict[str, Any]],
+        trace_rows: list[dict[str, Any]],
+        kb_hints: list[dict[str, Any]],
+        missing_policy: str,
+    ) -> list[dict[str, Any]]:
+        trace_lines: list[str] = []
+        for row in trace_rows:
+            trace_lines.append(
+                f"- {row.get('media_type')} asset_id={row.get('asset_id')} "
+                f"matched={row.get('matched_reference') or '-'} input={row.get('reference_input') or '-'}"
+            )
+
+        kb_lines: list[str] = []
+        for item in kb_hints[:5]:
+            kb_lines.append(
+                f"[kb] score={round(float(item.get('distance') or 0.0), 4)} src={item.get('source_ref')}\n"
+                f"{self._clip_text(str(item.get('text') or ''), 280)}"
+            )
+
+        system_text = (
+            "You are a strict storyboard template renderer.\n"
+            "Describe only what can be grounded from provided video references.\n"
+            "Do not fabricate unseen details.\n"
+            "Return JSON only. Do not output markdown.\n"
+            "Top-level JSON keys (exact):\n"
+            "- 视频类型\n"
+            "- 总时长\n"
+            "- 核心主题\n"
+            "- 场景概况\n"
+            "- 环境描述\n"
+            "- 人物设定 (array of objects with keys: 人物ID, 人物名称, 年龄/性别, 外貌特征, 性格标签)\n"
+            "- 分镜详细内容 (array of objects with keys: 镜号, 景别, 画面内容, 运镜方式, 时长, 台词/旁白, 音效)\n"
+            "- 视频名称\n"
+            "- 目标受众\n"
+            f'If unknown, fill value with "{missing_policy}".\n'
+            "Do not omit required keys.\n"
+        )
+
+        user_parts = [
+            f"language={language or 'zh'}",
+            f"template_id={template_id}",
+            f"description_request={(description_request or '').strip() or '(none)'}",
+            "reference_trace:\n" + ("\n".join(trace_lines) if trace_lines else "(none)"),
+        ]
+        if kb_lines:
+            user_parts.append("optional_kb_hints:\n" + "\n\n".join(kb_lines))
+
+        user_content: list[dict[str, Any]] = [{"type": "text", "text": "\n\n".join(user_parts)}]
+        user_content.extend(reference_blocks)
+        return [
+            {"role": "system", "content": system_text},
+            {"role": "user", "content": user_content},
+        ]
 
     def _build_media_description_messages(
         self,
@@ -2617,6 +2882,8 @@ class Tools:
         granularity: str = "",
         focus: str = "",
         output_format: str = "",
+        template_id: str = "",
+        enforce_template_output: bool = False,
         reference_chat_id: str = "",
         reference_status: str = "active",
         reference_image_asset_id: str = "",
@@ -2643,6 +2910,8 @@ class Tools:
         - granularity: brief / detailed
         - focus: people / scene / motion / camera / style / audio / lighting / props / custom
         - output_format: text (default) / structured
+        - template_id: optional template id (e.g. storyboard_list_v1)
+        - enforce_template_output: when true, force template rendering
         """
         resolved_blocks: list[dict[str, Any]] = []
         trace_rows: list[dict[str, Any]] = []
@@ -2656,9 +2925,10 @@ class Tools:
             asset_id: str,
             ref_url: str,
         ) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]], Optional[str]]:
-            aid = (asset_id or "").strip()
-            raw_url = (ref_url or "").strip()
-            ref_token = self._normalize_reference_token(raw_url)
+            aid, raw_url, ref_token = self._normalize_media_reference_inputs(
+                asset_id=asset_id,
+                ref_url=ref_url,
+            )
             ref_meta: Optional[dict[str, Any]] = None
 
             if self.valves.FORCE_MEDIA_ASSET_TOS:
@@ -2836,6 +3106,25 @@ class Tools:
         normalized_granularity = self._normalize_description_granularity(granularity)
         normalized_focus = self._normalize_description_focus(focus)
         normalized_output_format = self._normalize_description_output_format(output_format)
+        selected_template = self._match_template_from_request(
+            description_request=(description_request or "").strip(),
+            template_id=template_id,
+            enforce_template_output=bool(enforce_template_output),
+        )
+        template_mode = bool(selected_template)
+        template_media_scope = str((selected_template or {}).get("media_scope") or "").strip().lower()
+        if template_mode and template_media_scope == "video" and not video_asset:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "status_code": 400,
+                    "error_code": "InvalidParameter",
+                    "error_message": "Template storyboard_list_v1 requires a video reference.",
+                    "request_id": None,
+                },
+                ensure_ascii=False,
+            )
+        llm_output_format = "structured" if template_mode else normalized_output_format
 
         kb_enabled = bool(self.valves.DESCRIPTION_ENABLE_KB_ENHANCEMENT)
         if enable_kb_enhancement is not None:
@@ -2897,16 +3186,29 @@ class Tools:
         if not credential.get("ok"):
             return json.dumps(credential, ensure_ascii=False)
 
-        messages = self._build_media_description_messages(
-            language=(language or "zh").strip(),
-            granularity=normalized_granularity,
-            focus=normalized_focus,
-            output_format=normalized_output_format,
-            description_request=(description_request or "").strip(),
-            reference_blocks=resolved_blocks,
-            trace_rows=trace_rows,
-            kb_hints=kb_hints,
-        )
+        if template_mode:
+            template_id_value = str((selected_template or {}).get("template_id") or self.DEFAULT_STORYBOARD_TEMPLATE_ID)
+            missing_policy = str((selected_template or {}).get("missing_policy") or self.DEFAULT_MISSING_FIELD_POLICY)
+            messages = self._build_storyboard_template_messages(
+                language=(language or "zh").strip(),
+                template_id=template_id_value,
+                description_request=(description_request or "").strip(),
+                reference_blocks=resolved_blocks,
+                trace_rows=trace_rows,
+                kb_hints=kb_hints,
+                missing_policy=missing_policy,
+            )
+        else:
+            messages = self._build_media_description_messages(
+                language=(language or "zh").strip(),
+                granularity=normalized_granularity,
+                focus=normalized_focus,
+                output_format=llm_output_format,
+                description_request=(description_request or "").strip(),
+                reference_blocks=resolved_blocks,
+                trace_rows=trace_rows,
+                kb_hints=kb_hints,
+            )
         result = await self._ark_chat_completions(
             messages=messages,
             model=model_id,
@@ -2935,7 +3237,17 @@ class Tools:
 
         description_structured: Optional[dict[str, Any]] = None
         description_text = provider_text.strip()
-        if normalized_output_format == "structured":
+        if template_mode:
+            parsed = self._extract_json_object(provider_text)
+            missing_policy = str((selected_template or {}).get("missing_policy") or self.DEFAULT_MISSING_FIELD_POLICY)
+            normalized_storyboard = self._normalize_storyboard_structured(
+                payload=parsed if isinstance(parsed, dict) else None,
+                provider_text=provider_text,
+                missing_policy=missing_policy,
+            )
+            description_structured = normalized_storyboard
+            description_text = self._render_storyboard_template_text(normalized_storyboard)
+        elif normalized_output_format == "structured":
             parsed = self._extract_json_object(provider_text)
             if parsed is None:
                 return json.dumps(
@@ -2966,6 +3278,8 @@ class Tools:
             "granularity": normalized_granularity,
             "focus": normalized_focus,
             "output_format": normalized_output_format,
+            "template_mode": template_mode,
+            "template_id": (selected_template or {}).get("template_id") if template_mode else None,
             "description_text": description_text,
             "description_structured": description_structured,
             "reuse_payload": reuse_payload,
@@ -3101,3 +3415,59 @@ class Tools:
         Backward-compatible alias of get_seed_pro_multimodal_input_limits.
         """
         return await self.get_seed_pro_multimodal_input_limits()
+
+    async def get_agent_policy_summary(self) -> str:
+        """
+        Return business-level policy summary for this merged agent.
+        """
+        kb_scope = self._split_csv_values(self.valves.OPTIMIZER_KB_NAMES)
+        payload = {
+            "ok": True,
+            "agent": "Doubao Seed Prompt Merged Agent",
+            "capabilities": [
+                "共创改稿（prompt co-create/revise）",
+                "知识库优化（KB-backed optimizer）",
+                "素材描述（media describe/reuse）",
+            ],
+            "routing_priority": [
+                "显式口令",
+                "会话上下文",
+                "默认路由",
+            ],
+            "optimizer_policy": {
+                "enabled": bool(self.valves.OPTIMIZER_ENABLED),
+                "target_model_label": str(self.valves.OPTIMIZER_FIXED_MODEL or "seedance-2.0"),
+                "kb_scope": kb_scope,
+                "min_evidence": int(self.valves.OPTIMIZER_KB_MIN_EVIDENCE),
+            },
+            "media_describe_policy": {
+                "default_granularity": str(self.valves.DESCRIPTION_DEFAULT_GRANULARITY or "brief"),
+                "default_output_format": str(self.valves.DESCRIPTION_DEFAULT_OUTPUT_FORMAT or "text"),
+                "default_focus": self._normalize_description_focus(""),
+                "single_media_routing": {
+                    "image": "auto_describe_then_return_raw",
+                    "video_or_audio": "ask_intent_before_describe",
+                    "intent_options": ["概览", "详细描述", "专业级维度描述", "按专业分镜模板输出（需确认模板）"],
+                },
+                "template_policy": {
+                    "trigger": "explicit_user_request_only",
+                    "template_source": "KB-02-模板库",
+                    "missing_field_policy": "[待补充]",
+                    "confirmation_each_turn": True,
+                    "default_template_id": self.DEFAULT_STORYBOARD_TEMPLATE_ID,
+                    "templates": self._list_template_catalog(),
+                },
+                "output_policy": {
+                    "default": "return_api_description_text_raw",
+                    "allow_minimal_header": True,
+                    "no_summary_or_extension_unless_requested": True,
+                },
+            },
+            "ephemeral_instruction_policy": {
+                "ttl": "current_turn_only",
+                "reset_to_default_each_turn": True,
+                "persist_requires_explicit_user_confirmation": True,
+                "forbid_persist_to_kb_or_registry_without_explicit_request": True,
+            },
+        }
+        return json.dumps(payload, ensure_ascii=False)

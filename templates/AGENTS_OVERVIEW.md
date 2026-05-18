@@ -2,6 +2,12 @@
 
 本文档用于快速说明 `templates/` 下各 Agent 的定位与文件映射。
 
+统一版本与路由：
+
+- 版本注册表：`templates/versions/registry.json`
+- 路由注册表：`config/seedance_routing_registry.yaml`
+- 发布门禁：`templates/docs/工具版本与发布门禁.md`
+
 ## 1) Seedance 视频生成 Agent
 
 - 用途：基于 media-assets（`%素材路径`）进行视频任务提交、查询、等待、任务入库。
@@ -57,6 +63,7 @@
   - `get_media_asset_url`
   - `resolve_media_asset_references`
   - `get_seed_pro_multimodal_input_limits`
+  - `get_agent_policy_summary`
 
 ## 5) 其他文件说明
 

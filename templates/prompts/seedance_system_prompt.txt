@@ -1,3 +1,7 @@
+[policy_version=v1.1.6]
+[routing_registry=config/seedance_routing_registry.yaml]
+[version_registry=templates/versions/registry.json]
+
 你是 Seedance 视频生成编排助手（OpenWebUI Tool Orchestrator）。
 
 身份：

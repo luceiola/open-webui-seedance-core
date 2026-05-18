@@ -13,6 +13,7 @@ import base64
 import json
 import os
 import re
+import sys
 import threading
 import time
 import uuid
@@ -23,6 +24,21 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 import httpx
 from fastapi import Request
 from pydantic import BaseModel, Field
+
+_TOOL_DIR = Path(__file__).resolve().parent
+if str(_TOOL_DIR) not in sys.path:
+    sys.path.append(str(_TOOL_DIR))
+
+from shared.toolkit import (
+    bridge_upsert,
+    build_auth_headers,
+    build_base_url,
+    compact_media_asset_item,
+    extract_media_asset_references,
+    extract_request_id,
+    normalize_httpx_error,
+    request_openwebui_json,
+)
 
 
 class Tools:
@@ -77,33 +93,21 @@ class Tools:
         self.valves = self.Valves()
 
     def _base_url(self, __request__: Optional[Request]) -> str:
-        if __request__ is not None and __request__.url is not None:
-            return f"{__request__.url.scheme}://{__request__.url.netloc}"
-        return self.valves.OPENWEBUI_BASE_URL.rstrip("/")
+        return build_base_url(__request__, self.valves.OPENWEBUI_BASE_URL)
 
     def _headers(self, __request__: Optional[Request]) -> dict[str, str]:
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-
-        if __request__ is not None:
-            auth_header = __request__.headers.get("Authorization")
-            if auth_header:
-                headers["Authorization"] = auth_header
-                return headers
-
-            token_cookie = __request__.cookies.get("token")
-            if token_cookie:
-                headers["Authorization"] = f"Bearer {token_cookie}"
-                return headers
-
-        if self.valves.OPENWEBUI_API_KEY:
-            headers["Authorization"] = f"Bearer {self.valves.OPENWEBUI_API_KEY}"
-
-        return headers
+        return build_auth_headers(
+            __request__,
+            self.valves.OPENWEBUI_API_KEY,
+            include_content_type=True,
+        )
 
     def _headers_without_content_type(self, __request__: Optional[Request]) -> dict[str, str]:
-        headers = self._headers(__request__)
-        headers.pop("Content-Type", None)
-        return headers
+        return build_auth_headers(
+            __request__,
+            self.valves.OPENWEBUI_API_KEY,
+            include_content_type=False,
+        )
 
     def _user_id(self, __user__: Optional[dict]) -> str:
         if __user__ and __user__.get("id"):
@@ -111,60 +115,10 @@ class Tools:
         return "anonymous"
 
     def _extract_request_id(self, text: str) -> Optional[str]:
-        if not text:
-            return None
-        m = re.search(r"request[_ ]id\s*[:=]\s*([A-Za-z0-9_-]+)", text, flags=re.IGNORECASE)
-        return m.group(1) if m else None
+        return extract_request_id(text)
 
     def _normalize_error(self, response: httpx.Response) -> dict[str, Any]:
-        raw_text = response.text
-        code: Optional[str] = None
-        message: Optional[str] = None
-        request_id: Optional[str] = None
-
-        try:
-            payload = response.json()
-        except Exception:
-            payload = None
-
-        if isinstance(payload, dict):
-            code = payload.get("code")
-            message = payload.get("message")
-            request_id = payload.get("request_id")
-
-            if isinstance(payload.get("error"), dict):
-                error_obj = payload.get("error") or {}
-                code = code or error_obj.get("code")
-                message = message or error_obj.get("message")
-                request_id = request_id or error_obj.get("request_id")
-
-            detail = payload.get("detail")
-            if isinstance(detail, dict):
-                code = code or detail.get("code")
-                message = message or detail.get("message") or detail.get("error")
-                request_id = request_id or detail.get("request_id")
-            elif isinstance(detail, str):
-                message = message or detail
-                request_id = request_id or self._extract_request_id(detail)
-
-            output = payload.get("output")
-            if isinstance(output, dict):
-                code = code or output.get("code")
-                message = message or output.get("message")
-
-        if not message:
-            message = raw_text
-        if not request_id:
-            request_id = self._extract_request_id(message or "")
-
-        return {
-            "ok": False,
-            "status_code": response.status_code,
-            "error": raw_text,
-            "error_code": code,
-            "error_message": message,
-            "request_id": request_id,
-        }
+        return normalize_httpx_error(response)
 
     def _read_env_value_from_file(self, key: str) -> Optional[str]:
         candidates: list[Path] = []
@@ -224,21 +178,15 @@ class Tools:
         __request__: Optional[Request],
         body: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
-        url = f"{self._base_url(__request__)}{path}"
-        headers = self._headers(__request__)
-
-        async with httpx.AsyncClient(timeout=self.valves.REQUEST_TIMEOUT_SECONDS, trust_env=False) as client:
-            response = await client.request(method=method, url=url, headers=headers, json=body)
-
-        if response.status_code >= 400:
-            return self._normalize_error(response)
-
-        try:
-            payload = response.json()
-        except Exception:
-            payload = {"raw_text": response.text}
-
-        return {"ok": True, "status_code": response.status_code, "data": payload}
+        return await request_openwebui_json(
+            method=method,
+            path=path,
+            __request__=__request__,
+            timeout_seconds=self.valves.REQUEST_TIMEOUT_SECONDS,
+            openwebui_base_url=self.valves.OPENWEBUI_BASE_URL,
+            openwebui_api_key=self.valves.OPENWEBUI_API_KEY,
+            body=body,
+        )
 
     async def _bridge_upsert_task(
         self,
@@ -300,8 +248,11 @@ class Tools:
         if prompt_resources is not None:
             payload["prompt_resources"] = prompt_resources
 
-        bridge = await self._request("POST", "/api/v1/tasks/bridge/upsert", __request__, payload)
-        return bool(bridge.get("ok"))
+        return await bridge_upsert(
+            requester=self._request,
+            payload=payload,
+            __request__=__request__,
+        )
 
     async def _download_binary(self, url: str, headers: Optional[dict[str, str]] = None) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=self.valves.REQUEST_TIMEOUT_SECONDS, trust_env=False, follow_redirects=True) as client:
@@ -415,13 +366,7 @@ class Tools:
         }
 
     def _extract_media_asset_references(self, prompt: str) -> list[str]:
-        refs = re.findall(r"%([^\s%,，。；;:：!！?？)）\]】}》>\"“”'`]+)", prompt or "")
-        cleaned: list[str] = []
-        for ref in refs:
-            value = ref.strip().rstrip(".,;:!?)\\]}>'\"")
-            if value:
-                cleaned.append(value)
-        return list(dict.fromkeys(cleaned))
+        return extract_media_asset_references(prompt)
 
     def _replace_refs_with_characters(self, prompt: str, references: list[str]) -> str:
         updated = prompt or ""
@@ -438,21 +383,7 @@ class Tools:
         return list(dict.fromkeys(candidates))
 
     def _compact_media_asset_item(self, item: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "asset_id": item.get("asset_id"),
-            "display_name": item.get("display_name"),
-            "relative_path": item.get("relative_path"),
-            "original_filename": item.get("original_filename"),
-            "media_type": item.get("media_type"),
-            "mime_type": item.get("mime_type"),
-            "size_bytes": item.get("size_bytes"),
-            "status": item.get("status"),
-            "chat_id": item.get("chat_id"),
-            "tos_key": item.get("tos_key"),
-            "tos_status": item.get("tos_status"),
-            "created_at": item.get("created_at"),
-            "updated_at": item.get("updated_at"),
-        }
+        return compact_media_asset_item(item)
 
     def _normalize_http_url(self, value: Any) -> Optional[str]:
         url = str(value or "").strip()

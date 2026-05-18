@@ -1,0 +1,49 @@
+name: Seedance Template Guard
+
+on:
+  pull_request:
+    paths:
+      - 'templates/**'
+      - 'scripts/seedance/**'
+      - 'config/seedance_routing_registry.yaml'
+      - 'backend/open_webui/test/**'
+      - '.github/workflows/seedance-template-guard.yaml'
+  push:
+    branches: [main]
+    paths:
+      - 'templates/**'
+      - 'scripts/seedance/**'
+      - 'config/seedance_routing_registry.yaml'
+      - 'backend/open_webui/test/**'
+      - '.github/workflows/seedance-template-guard.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  template-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install minimal deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest fastapi pydantic httpx starlette
+
+      - name: Check import/skill/prompt integrity
+        run: |
+          python scripts/seedance/check_templates_integrity.py
+
+      - name: Run seedance template tests
+        run: |
+          pytest \
+            backend/open_webui/test/shared/test_seedance_shared_contracts.py \
+            backend/open_webui/test/shared/test_templates_integrity.py \
+            backend/open_webui/test/apps/webui/routers/test_seedance_tools_e2e.py

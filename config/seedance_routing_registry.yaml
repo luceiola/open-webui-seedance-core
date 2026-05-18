@@ -1,0 +1,114 @@
+{
+  "version": "v1",
+  "updated_at": "2026-05-18T00:00:00+08:00",
+  "rules": [
+    {
+      "rule_id": "R-DSP-001",
+      "status": "active",
+      "priority": 100,
+      "intent": "media_describe_single_image",
+      "trigger": {
+        "mode": "explicit_or_detected",
+        "conditions": [
+          "single_media_reference_only",
+          "media_type=image"
+        ]
+      },
+      "route": {
+        "skill": "doubao-seed-prompt-execution-skill",
+        "tool": "describe_media_assets_for_prompt",
+        "kb_scope": [],
+        "template_id": "",
+        "params": {
+          "granularity": "brief",
+          "output_format": "text"
+        }
+      }
+    },
+    {
+      "rule_id": "R-DSP-002",
+      "status": "active",
+      "priority": 90,
+      "intent": "media_describe_template_storyboard",
+      "trigger": {
+        "mode": "explicit",
+        "phrases": [
+          "按专业分镜模板输出",
+          "按模板返回"
+        ]
+      },
+      "route": {
+        "skill": "doubao-seed-prompt-execution-skill",
+        "tool": "describe_media_assets_for_prompt",
+        "kb_scope": [
+          "KB-02-模板库"
+        ],
+        "template_id": "storyboard_list_v1",
+        "params": {
+          "granularity": "detailed",
+          "output_format": "text",
+          "enforce_template_output": true
+        }
+      }
+    },
+    {
+      "rule_id": "R-SD-001",
+      "status": "active",
+      "priority": 100,
+      "intent": "seedance_video_generate_with_media_refs",
+      "trigger": {
+        "mode": "explicit_or_detected",
+        "conditions": [
+          "contains_media_references"
+        ]
+      },
+      "route": {
+        "skill": "seedance-execution-skill",
+        "tool": "generate_video_with_media_assets",
+        "kb_scope": [],
+        "template_id": "",
+        "params": {}
+      }
+    },
+    {
+      "rule_id": "R-HH-001",
+      "status": "active",
+      "priority": 100,
+      "intent": "happyhorse_video_generate_with_media_refs",
+      "trigger": {
+        "mode": "explicit_or_detected",
+        "conditions": [
+          "contains_media_references"
+        ]
+      },
+      "route": {
+        "skill": "happyhorse-execution-skill",
+        "tool": "generate_video_with_happyhorse",
+        "kb_scope": [],
+        "template_id": "",
+        "params": {}
+      }
+    },
+    {
+      "rule_id": "R-GPTI-001",
+      "status": "active",
+      "priority": 100,
+      "intent": "gpt_image_generate_with_media_refs",
+      "trigger": {
+        "mode": "explicit_or_detected",
+        "conditions": [
+          "contains_media_references"
+        ]
+      },
+      "route": {
+        "skill": "gpt-image2-execution-skill",
+        "tool": "generate_image_with_media_assets",
+        "kb_scope": [],
+        "template_id": "",
+        "params": {
+          "model": "gpt-image-2"
+        }
+      }
+    }
+  ]
+}

@@ -12,6 +12,7 @@ import asyncio
 import json
 import os
 import re
+import sys
 import time
 from typing import Any, Optional
 from urllib.parse import urlencode
@@ -22,6 +23,21 @@ import httpx
 from fastapi import Request
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
+
+_TOOL_DIR = Path(__file__).resolve().parent
+if str(_TOOL_DIR) not in sys.path:
+    sys.path.append(str(_TOOL_DIR))
+
+from shared.toolkit import (
+    bridge_upsert,
+    build_auth_headers,
+    build_base_url,
+    compact_media_asset_item,
+    extract_media_asset_references,
+    extract_request_id,
+    normalize_httpx_error,
+    request_openwebui_json,
+)
 
 
 class Tools:
@@ -48,28 +64,14 @@ class Tools:
         self.valves = self.Valves()
 
     def _base_url(self, __request__: Optional[Request]) -> str:
-        if __request__ is not None and __request__.url is not None:
-            return f"{__request__.url.scheme}://{__request__.url.netloc}"
-        return self.valves.OPENWEBUI_BASE_URL.rstrip("/")
+        return build_base_url(__request__, self.valves.OPENWEBUI_BASE_URL)
 
     def _headers(self, __request__: Optional[Request]) -> dict[str, str]:
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-
-        if __request__ is not None:
-            auth_header = __request__.headers.get("Authorization")
-            if auth_header:
-                headers["Authorization"] = auth_header
-                return headers
-
-            token_cookie = __request__.cookies.get("token")
-            if token_cookie:
-                headers["Authorization"] = f"Bearer {token_cookie}"
-                return headers
-
-        if self.valves.OPENWEBUI_API_KEY:
-            headers["Authorization"] = f"Bearer {self.valves.OPENWEBUI_API_KEY}"
-
-        return headers
+        return build_auth_headers(
+            __request__,
+            self.valves.OPENWEBUI_API_KEY,
+            include_content_type=True,
+        )
 
     def _user_id(self, __user__: Optional[dict]) -> Optional[str]:
         if not __user__:
@@ -78,92 +80,10 @@ class Tools:
         return str(user_id) if user_id else None
 
     def _extract_request_id(self, text: str) -> Optional[str]:
-        if not text:
-            return None
-        m = re.search(r"Request id:\s*([A-Za-z0-9_-]+)", text, flags=re.IGNORECASE)
-        return m.group(1) if m else None
+        return extract_request_id(text)
 
     def _normalize_error(self, response: httpx.Response) -> dict[str, Any]:
-        raw_text = response.text
-        detail: Any = None
-        parsed_json: Optional[dict[str, Any]] = None
-
-        try:
-            obj = response.json()
-            if isinstance(obj, dict):
-                parsed_json = obj
-                detail = obj.get("detail")
-        except Exception:
-            pass
-
-        error_code: Optional[str] = None
-        error_message: Optional[str] = None
-        request_id: Optional[str] = None
-
-        # 1) FastAPI detail may already be a dict.
-        if isinstance(detail, dict):
-            direct_code = detail.get("error_code") or detail.get("code")
-            direct_message = detail.get("error_message") or detail.get("message")
-            if isinstance(direct_code, str) and direct_code.strip():
-                error_code = direct_code.strip()
-            if isinstance(direct_message, str) and direct_message.strip():
-                error_message = direct_message.strip()
-
-            err = detail.get("error")
-            if isinstance(err, dict):
-                error_code = err.get("code")
-                error_message = err.get("message")
-                request_id = self._extract_request_id(error_message or "")
-            elif isinstance(err, str):
-                error_message = err
-            if not request_id:
-                request_id = detail.get("request_id")
-
-        # 2) Typical case: detail is a string "Ark tasks.create failed: { ... }".
-        if isinstance(detail, str):
-            text = detail
-            request_id = request_id or self._extract_request_id(text)
-            # Try parse trailing JSON object after ": ".
-            pos = text.find("{")
-            if pos >= 0:
-                candidate = text[pos:]
-                try:
-                    nested = json.loads(candidate)
-                    if isinstance(nested, dict):
-                        err = nested.get("error")
-                        if isinstance(err, dict):
-                            error_code = error_code or err.get("code")
-                            error_message = error_message or err.get("message")
-                            request_id = request_id or self._extract_request_id(error_message or "")
-                except Exception:
-                    pass
-            if not error_message:
-                error_message = text
-
-        # 3) Direct provider style: {"error":{...}}
-        if not error_code and parsed_json and isinstance(parsed_json.get("error"), dict):
-            err = parsed_json.get("error") or {}
-            error_code = err.get("code")
-            error_message = error_message or err.get("message")
-            request_id = request_id or self._extract_request_id(error_message or "")
-
-        # 4) Flat error payload style: {"error_code":"...","error_message":"..."}
-        if parsed_json:
-            if not error_code and isinstance(parsed_json.get("error_code"), str):
-                error_code = parsed_json.get("error_code")
-            if not error_message and isinstance(parsed_json.get("error_message"), str):
-                error_message = parsed_json.get("error_message")
-            if not request_id and isinstance(parsed_json.get("request_id"), str):
-                request_id = parsed_json.get("request_id")
-
-        return {
-            "ok": False,
-            "status_code": response.status_code,
-            "error": raw_text,
-            "error_code": error_code,
-            "error_message": error_message or raw_text,
-            "request_id": request_id,
-        }
+        return normalize_httpx_error(response)
 
     def _normalize_http_exception(self, exc: HTTPException) -> dict[str, Any]:
         status_code = int(exc.status_code or 500)
@@ -399,13 +319,7 @@ class Tools:
         raise ValueError(f"Unsupported media type for seedance generation: {media_type}")
 
     def _extract_media_asset_references(self, prompt: str) -> list[str]:
-        refs = re.findall(r"%([^\s%,，。；;:：!！?？)）\]】}》>\"“”'`]+)", prompt or "")
-        cleaned: list[str] = []
-        for ref in refs:
-            value = ref.strip().rstrip(".,;:!?)\\]}>'\"")
-            if value:
-                cleaned.append(value)
-        return list(dict.fromkeys(cleaned))
+        return extract_media_asset_references(prompt)
 
     def _clean_prompt_references(self, prompt: str, references: list[str], symbol: str) -> str:
         cleaned = prompt
@@ -452,21 +366,7 @@ class Tools:
         }
 
     def _compact_media_asset_item(self, item: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "asset_id": item.get("asset_id"),
-            "display_name": item.get("display_name"),
-            "relative_path": item.get("relative_path"),
-            "original_filename": item.get("original_filename"),
-            "media_type": item.get("media_type"),
-            "mime_type": item.get("mime_type"),
-            "size_bytes": item.get("size_bytes"),
-            "status": item.get("status"),
-            "chat_id": item.get("chat_id"),
-            "tos_key": item.get("tos_key"),
-            "tos_status": item.get("tos_status"),
-            "created_at": item.get("created_at"),
-            "updated_at": item.get("updated_at"),
-        }
+        return compact_media_asset_item(item)
 
     def _media_asset_reference_candidates(self, item: dict[str, Any]) -> list[str]:
         candidates: list[str] = []
@@ -540,23 +440,15 @@ class Tools:
         __request__: Optional[Request],
         body: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
-        url = f"{self._base_url(__request__)}{path}"
-        headers = self._headers(__request__)
-
-        # Disable env proxy inheritance to avoid localhost requests being routed to proxy
-        # and returning opaque 502 errors.
-        async with httpx.AsyncClient(timeout=self.valves.REQUEST_TIMEOUT_SECONDS, trust_env=False) as client:
-            response = await client.request(method=method, url=url, headers=headers, json=body)
-
-        if response.status_code >= 400:
-            return self._normalize_error(response)
-
-        try:
-            payload = response.json()
-        except Exception:
-            payload = {"raw_text": response.text}
-
-        return {"ok": True, "status_code": response.status_code, "data": payload}
+        return await request_openwebui_json(
+            method=method,
+            path=path,
+            __request__=__request__,
+            timeout_seconds=self.valves.REQUEST_TIMEOUT_SECONDS,
+            openwebui_base_url=self.valves.OPENWEBUI_BASE_URL,
+            openwebui_api_key=self.valves.OPENWEBUI_API_KEY,
+            body=body,
+        )
 
     async def _bridge_upsert_task(
         self,
@@ -621,8 +513,11 @@ class Tools:
         if prompt_resources is not None:
             payload["prompt_resources"] = prompt_resources
 
-        bridge = await self._request("POST", "/api/v1/tasks/bridge/upsert", __request__, payload)
-        return bool(bridge.get("ok"))
+        return await bridge_upsert(
+            requester=self._request,
+            payload=payload,
+            __request__=__request__,
+        )
 
     async def list_material_packages(self, __request__: Request = None, __user__: dict = None) -> str:
         """

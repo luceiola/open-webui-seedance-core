@@ -1,6 +1,9 @@
 ---
 name: seedance-execution-skill
 description: Seedance 媒体素材（media-assets）专用执行规范。仅使用 %素材路径 引用，先校验后生成，默认提交即返回 task_id，不阻塞等待。
+version: v1.1.6
+routing_registry: config/seedance_routing_registry.yaml
+version_registry: templates/versions/registry.json
 ---
 
 # Seedance Execution Skill (Media-Only)
