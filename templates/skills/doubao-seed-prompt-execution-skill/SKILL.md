@@ -23,6 +23,7 @@ version_registry: templates/versions/registry.json
 - `co_create_video_prompt_with_seed_pro`
 - `optimize_video_prompt_with_kb_for_seedance2`
 - `describe_media_assets_for_prompt`
+- `get_seed_pro_multimodal_input_limits`
 - `get_agent_policy_summary`
 - `list_media_assets`
 - `get_media_asset`
@@ -87,15 +88,17 @@ version_registry: templates/versions/registry.json
    - 识别条件：用户消息只包含一个素材名（如 `%a.png`、`%a.mp4`）且无其它任务词。
    - 先调用 `resolve_media_asset_references` 判定素材类型。
    - 若为图片：直接调用 `describe_media_assets_for_prompt`。
-   - 若为视频/音频：先询问用户意图，固定选项：
+   - 若为视频/音频：先询问用户意图，默认固定选项：
      - 概览
      - 详细描述
      - 专业级维度描述（人物、场景、对话/旁白、行为、分镜、灯光、题材、节奏、构图、声音设计）
+   - 仅当用户已显式表达“模板输出”意图（如“按模板/分镜模板输出”）时，才追加选项：
      - 按专业分镜模板输出（需确认模板）
    - 用户选择后再调用描述工具，不得在未确认意图时直接返回视频/音频详细描述。
 3. 调用：
    - 主调用：`describe_media_assets_for_prompt`
-   - 可选预处理：`resolve_media_asset_references`（有 `%引用` 时）
+   - 单素材自动分流场景：`resolve_media_asset_references` 为必选（用于判定 media_type）。
+   - 非单素材场景：`resolve_media_asset_references` 为可选预处理（有 `%引用` 时建议调用）。
    - 若是上一轮描述结果的文本细化，可不调用工具，直接在已有描述上补全结构。
 4. 约束：
    - 仅描述素材可观察信息，不补写不可验证细节。
@@ -109,6 +112,7 @@ version_registry: templates/versions/registry.json
    - 结构化请求时输出结构化结果。
    - 返回结果要可直接复用于下一轮共创（作为基础来源）。
    - 除非用户明确要求，否则直接展示 API 返回正文，不做总结、改写或扩展；允许仅增加一行极简头。
+   - 若本轮未调用描述工具（仅基于上一轮描述细化），需明确“基于上一轮素材描述补写”，不得伪装为实时重解析结果。
 
 ## 策略卡片（新增）
 
