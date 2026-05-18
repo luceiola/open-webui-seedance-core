@@ -38,7 +38,7 @@
         ]
       },
       "route": {
-        "skill": "doubao-seed-prompt-execution-skill",
+        "skill": "doubao-seed-storyboard-template-execution-skill",
         "tool": "describe_media_assets_for_prompt",
         "kb_scope": [
           "KB-02-模板库"

@@ -1,6 +1,6 @@
 {
   "version": "v1.0.0",
-  "updated_at": "2026-05-18T13:30:00+08:00",
+  "updated_at": "2026-05-18T19:10:00+08:00",
   "components": {
     "seedance_material_package": {
       "tool": {
@@ -59,11 +59,27 @@
       },
       "skill": {
         "file": "templates/skills/doubao-seed-prompt-execution-skill/SKILL.md",
-        "version": "v1.1.6"
+        "version": "v1.2.0"
       },
       "system_prompt": {
         "file": "templates/prompts/doubao_seed_prompt_system_prompt.txt",
-        "version": "v1.1.6"
+        "version": "v1.2.0"
+      }
+    },
+    "doubao_seed_storyboard_template": {
+      "tool": {
+        "file": "templates/doubao_seed_prompt_tool.py",
+        "import_file": "templates/doubao_seed_prompt_tool_v1.import.json",
+        "version": "0.4.0",
+        "standalone_file": "templates/dist/doubao_seed_prompt_tool.py"
+      },
+      "skill": {
+        "file": "templates/skills/doubao-seed-storyboard-template-execution-skill/SKILL.md",
+        "version": "v1.0.0"
+      },
+      "system_prompt": {
+        "file": "templates/prompts/doubao_seed_storyboard_template_system_prompt.txt",
+        "version": "v1.0.0"
       }
     }
   }
