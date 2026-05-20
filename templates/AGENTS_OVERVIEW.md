@@ -46,26 +46,38 @@
   - `get_generation_task_status`
   - `wait_generation_task`
 
-## 4) Doubao Seed Prompt Merged Agent（共创 + 优化 + 素材描述）
+## 4) Doubao Seed Prompt Base Agent（共建 + 基础素材描述）
 
-- 用途：同一 Agent 内支持“视频提示词共创/改稿”“KB 强依赖优化”“媒体素材描述复用”。
-- 说明：仍不提交生成任务，仅做 prompt 侧能力。
+- 用途：支持“视频提示词共建/改稿”“基础素材描述复用”。
+- 说明：不处理专业分镜模板，不提交生成任务。
 - System Prompt：`prompts/doubao_seed_prompt_system_prompt.txt`
 - Skill：`skills/doubao-seed-prompt-execution-skill/SKILL.md`
 - Tool：`doubao_seed_prompt_tool.py`
 - Import 包：`doubao_seed_prompt_tool_v1.import.json`（`id=doubao_seed_prompt_tool_v1`）
 - 关键入口函数：
   - `co_create_video_prompt_with_seed_pro`
-  - `optimize_video_prompt_with_kb_for_seedance2`
   - `describe_media_assets_for_prompt`
   - `list_media_assets`
   - `get_media_asset`
   - `get_media_asset_url`
   - `resolve_media_asset_references`
-  - `get_seed_pro_multimodal_input_limits`
-  - `get_agent_policy_summary`
 
-## 5) 其他文件说明
+## 5) Doubao Seed Storyboard Template Agent（分镜模板专用）
+
+- 用途：仅处理 `storyboard_list_v1` 专业分镜模板输出。
+- 说明：只做模板产出，不做共建改稿与优化，不提交生成任务。
+- System Prompt：`prompts/doubao_seed_storyboard_template_system_prompt.txt`
+- Skill：`skills/doubao-seed-storyboard-template-execution-skill/SKILL.md`
+- Tool：`doubao_seed_prompt_tool.py`
+- Import 包：`doubao_seed_prompt_tool_v1.import.json`（`id=doubao_seed_prompt_tool_v1`）
+- 关键入口函数：
+  - `describe_media_assets_for_prompt`（固定 `template_id=storyboard_list_v1`）
+  - `resolve_media_asset_references`
+  - `list_media_assets`
+  - `get_media_asset`
+  - `get_media_asset_url`
+
+## 6) 其他文件说明
 
 - `skills/seedance-user-guide-skill/SKILL.md`：固定版用户手册输出技能（说明类，不负责生成任务）。
 - `prompts/seedance_video_description_prompt.txt`：视频描述模板提示词（模板用途，非主编排 Agent）。

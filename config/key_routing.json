@@ -1,0 +1,36 @@
+{
+  "providers": {
+    "seedance": {
+      "strict_single_group": true,
+      "default_alias": null,
+      "credentials": {
+        "k1": {
+          "env": "ARK_API_KEY_SEEDANCE_K1"
+        },
+        "k2": {
+          "env": "ARK_API_KEY_SEEDANCE_K2"
+        },
+        "k3": {
+          "env": "ARK_API_KEY_SEEDANCE_K3"
+        }
+      },
+      "bindings": [
+        {
+          "group_id": "grp_seedance_k1",
+          "alias": "k1",
+          "priority": 100
+        },
+        {
+          "group_id": "grp_seedance_k2",
+          "alias": "k2",
+          "priority": 100
+        },
+        {
+          "group_id": "grp_seedance_k3",
+          "alias": "k3",
+          "priority": 100
+        }
+      ]
+    }
+  }
+}
