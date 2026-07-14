@@ -30,7 +30,6 @@ fi
 
 # 2) Tool templates
 check_file "templates/seedance_material_package_tool.py"
-check_file "templates/seedance_material_package_tool_v2.import.json"
 check_file "templates/seedance_video_tool.py"
 check_file "templates/prompts/seedance_system_prompt.txt"
 check_file "templates/prompts/seedance_video_description_prompt.txt"

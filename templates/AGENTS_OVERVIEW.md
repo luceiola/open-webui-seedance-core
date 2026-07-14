@@ -7,6 +7,7 @@
 - 版本注册表：`templates/versions/registry.json`
 - 路由注册表：`config/seedance_routing_registry.yaml`
 - 发布门禁：`templates/docs/工具版本与发布门禁.md`
+- 工具导入方式：不再维护 `*.import.json`，统一直接粘贴 `templates/*_tool.py` 内容。
 
 ## 1) Seedance 视频生成 Agent
 
@@ -14,7 +15,6 @@
 - System Prompt：`prompts/seedance_system_prompt.txt`
 - Skill：`skills/seedance-execution-skill/SKILL.md`
 - Tool：`seedance_material_package_tool.py`
-- Import 包：`seedance_material_package_tool_v2.import.json`（`id=seedance_material_package_tool_v2`）
 - 关键入口函数：
   - `generate_video_with_media_assets`
   - `list_generation_tasks`
@@ -27,7 +27,6 @@
 - System Prompt：`prompts/happyhorse_system_prompt.txt`
 - Skill：`skills/happyhorse-execution-skill/SKILL.md`
 - Tool：`happyhorse_media_tool.py`
-- Import 包：`happyhorse_media_tool_v1.import.json`（`id=happyhorse_media_tool_v1`）
 - 关键入口函数：
   - `generate_video_with_happyhorse`
   - `get_happyhorse_task_status`
@@ -39,7 +38,6 @@
 - System Prompt：`prompts/gpt_image2_system_prompt.txt`
 - Skill：`skills/gpt-image2-execution-skill/SKILL.md`
 - Tool：`gpt_image2_media_tool.py`
-- Import 包：`gpt_image2_media_tool_v1.import.json`（`id=gpt_image2_media_tool_v1`）
 - 关键入口函数：
   - `generate_image_with_media_assets`
   - `list_generation_tasks`
@@ -53,7 +51,6 @@
 - System Prompt：`prompts/doubao_seed_prompt_system_prompt.txt`
 - Skill：`skills/doubao-seed-prompt-execution-skill/SKILL.md`
 - Tool：`doubao_seed_prompt_tool.py`
-- Import 包：`doubao_seed_prompt_tool_v1.import.json`（`id=doubao_seed_prompt_tool_v1`）
 - 关键入口函数：
   - `co_create_video_prompt_with_seed_pro`
   - `describe_media_assets_for_prompt`
@@ -69,7 +66,6 @@
 - System Prompt：`prompts/doubao_seed_storyboard_template_system_prompt.txt`
 - Skill：`skills/doubao-seed-storyboard-template-execution-skill/SKILL.md`
 - Tool：`doubao_seed_prompt_tool.py`
-- Import 包：`doubao_seed_prompt_tool_v1.import.json`（`id=doubao_seed_prompt_tool_v1`）
 - 关键入口函数：
   - `describe_media_assets_for_prompt`（固定 `template_id=storyboard_list_v1`）
   - `resolve_media_asset_references`
@@ -83,7 +79,6 @@
 - System Prompt：`prompts/runninghub_seedance2_system_prompt.txt`
 - Skill：`skills/runninghub-seedance2-execution-skill/SKILL.md`
 - Tool：`runninghub_seedance2_tool.py`
-- Import 包：`runninghub_seedance2_tool_v1.import.json`（`id=runninghub_seedance2_tool_v1`）
 - 关键入口函数：
   - `generate_video_with_runninghub_seedance2`
   - `list_generation_tasks`
@@ -97,7 +92,6 @@
 - System Prompt：`prompts/btn_image2_system_prompt.txt`
 - Skill：`skills/btn-image2-execution-skill/SKILL.md`
 - Tool：`btn_image2_tool.py`
-- Import 包：`btn_image2_tool_v1.import.json`（`id=btn_image2_tool_v1`）
 - 关键入口函数：
   - `generate_image_with_btn_image2_gen`
   - `edit_image_with_btn_image2`

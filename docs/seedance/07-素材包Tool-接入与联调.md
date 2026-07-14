@@ -29,14 +29,13 @@ open-webui serve --host 127.0.0.1 --port 8080
 
 ## 3. 导入 Tool
 
-在 OpenWebUI 后台导入以下文件：
+在 OpenWebUI 后台创建/编辑 Tool，直接粘贴以下源码文件内容：
 
-- [seedance_material_package_tool_v2.import.json](/Users/lucas/Documents/openwebui-seedance/templates/seedance_material_package_tool_v2.import.json)
+- `templates/seedance_material_package_tool.py`
 
 注意：
-- 仅维护一个导入文件：`seedance_material_package_tool_v2.import.json`。
-- `Workspace -> Tools -> Import` 按钮只接受 `.json`（UI 限制），不会识别 `.py`。
-- 如果旧版工具出现 `list_material_packages` 502，使用 v2 版本（本地后端优先实现）。
+- 不再维护 `*.import.json` 镜像文件，`templates/*_tool.py` 是唯一真源。
+- 如旧版工具出现 `list_material_packages` 502，请用当前 `templates/seedance_material_package_tool.py` 全量覆盖。
 
 该 Tool 暴露 10 个能力：
 

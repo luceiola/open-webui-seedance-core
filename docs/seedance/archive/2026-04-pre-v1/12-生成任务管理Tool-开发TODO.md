@@ -46,11 +46,11 @@
 - [x] 从 `raw_response.content.video_url` 提取结果地址。
 - [x] 若无 URL，返回可读提示，不报假成功。
 
-## P4 导入文件同步
+## P4 工具源码交付
 
-- [x] 将最新工具代码同步到：
-  - [x] `templates/seedance_material_package_tool_v2.import.json`
-- [x] 保持单一导入文件策略，不再新增第二个 import json。
+- [x] 将最新工具代码交付到：
+  - [x] `templates/seedance_material_package_tool.py`
+- [x] 以 `templates/*_tool.py` 作为唯一真源，不再维护 `*.import.json` 镜像。
 
 ## P5 文档更新
 
@@ -73,4 +73,4 @@
 - [x] 在 OpenWebUI 对话中，LLM 能返回 `response_id(task_id)`。
 - [x] 用户可通过 Tool 查到终态并拿到 `video_url`。
 - [x] 错误可直接用于排障（含 request_id）。
-- [x] 文档、Tool、导入文件一致。
+- [x] 文档与 Tool 一致。

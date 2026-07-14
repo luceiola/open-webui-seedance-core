@@ -16,32 +16,6 @@ def _load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _check_import_sync(component_id: str, tool_file: Path, import_file: Path, errors: list[str]) -> None:
-    if not tool_file.exists():
-        errors.append(f"[{component_id}] missing tool file: {tool_file}")
-        return
-    if not import_file.exists():
-        errors.append(f"[{component_id}] missing import file: {import_file}")
-        return
-
-    tool_content = tool_file.read_text(encoding="utf-8")
-    import_obj = _load_json(import_file)
-    if not isinstance(import_obj, list) or not import_obj:
-        errors.append(f"[{component_id}] import file format must be non-empty JSON list: {import_file}")
-        return
-
-    item = import_obj[0] if isinstance(import_obj[0], dict) else {}
-    import_content = item.get("content")
-    if not isinstance(import_content, str):
-        errors.append(f"[{component_id}] missing string field `content` in import file: {import_file}")
-        return
-
-    if import_content != tool_content:
-        errors.append(
-            f"[{component_id}] import content mismatch: {import_file} is out of sync with {tool_file}"
-        )
-
-
 def _check_skill_prompt_headers(component_id: str, meta: dict[str, Any], errors: list[str]) -> None:
     skill_meta = meta.get("skill", {}) if isinstance(meta.get("skill"), dict) else {}
     prompt_meta = meta.get("system_prompt", {}) if isinstance(meta.get("system_prompt"), dict) else {}
@@ -79,7 +53,9 @@ def _check_skill_prompt_headers(component_id: str, meta: dict[str, Any], errors:
         if "[version_registry=templates/versions/registry.json]" not in prompt_text:
             errors.append(f"[{component_id}] prompt missing version_registry marker: {prompt_file}")
 
-    if tool_file.exists():
+    if not tool_file.exists():
+        errors.append(f"[{component_id}] missing tool file: {tool_file}")
+    else:
         expected_tool_version = str(tool_meta.get("version") or "").strip()
         if expected_tool_version:
             tool_text = tool_file.read_text(encoding="utf-8")
@@ -143,9 +119,11 @@ def run_checks() -> list[str]:
             continue
 
         tool_meta = meta.get("tool") if isinstance(meta.get("tool"), dict) else {}
-        tool_file = REPO_ROOT / str(tool_meta.get("file") or "")
-        import_file = REPO_ROOT / str(tool_meta.get("import_file") or "")
-        _check_import_sync(component_id, tool_file, import_file, errors)
+        import_file = str(tool_meta.get("import_file") or "").strip()
+        if import_file:
+            errors.append(
+                f"[{component_id}] deprecated field `tool.import_file` should be removed from registry: {import_file}"
+            )
         _check_skill_prompt_headers(component_id, meta, errors)
 
     _check_routing_registry(errors)

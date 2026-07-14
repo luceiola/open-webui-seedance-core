@@ -113,7 +113,10 @@ class Tools:
         )
         REQUEST_TIMEOUT_SECONDS: int = Field(default=180, ge=30, le=1800)
         MEDIA_URL_EXPIRES_IN_SECONDS: int = Field(default=3600, ge=60, le=604800)
-        SUBPROCESS_TIMEOUT_SECONDS: int = Field(default=900, ge=30, le=7200)
+        SUBPROCESS_TIMEOUT_SECONDS: int = Field(default=1800, ge=30, le=7200)
+        SUBPROCESS_TIMEOUT_BASE_SECONDS: int = Field(default=300, ge=0, le=7200)
+        SUBPROCESS_TIMEOUT_PER_IMAGE_SECONDS: int = Field(default=300, ge=0, le=7200)
+        SUBPROCESS_TIMEOUT_MAX_SECONDS: int = Field(default=3600, ge=30, le=7200)
         DEFAULT_SIZE: str = Field(default="1024x1792")
         DEFAULT_QUALITY: str = Field(default="auto")
         DEFAULT_MODEL: str = Field(default="gpt-image-2")
@@ -399,6 +402,15 @@ class Tools:
             return int(value)
         except Exception:
             return int(default)
+
+    def _resolve_job_timeout_seconds(self, *, requested_n: int) -> int:
+        floor_timeout = max(30, int(self.valves.SUBPROCESS_TIMEOUT_SECONDS))
+        base_timeout = max(0, int(self.valves.SUBPROCESS_TIMEOUT_BASE_SECONDS))
+        per_image_timeout = max(0, int(self.valves.SUBPROCESS_TIMEOUT_PER_IMAGE_SECONDS))
+        max_timeout = max(floor_timeout, int(self.valves.SUBPROCESS_TIMEOUT_MAX_SECONDS))
+        effective_n = max(1, int(requested_n or 1))
+        estimated_timeout = base_timeout + per_image_timeout * effective_n
+        return min(max_timeout, max(floor_timeout, estimated_timeout))
 
     def _summarize_btn_payload(self, payload: dict[str, Any], *, json_file: str) -> dict[str, Any]:
         response_node = payload.get("response") if isinstance(payload.get("response"), dict) else {}
@@ -728,6 +740,7 @@ class Tools:
         generation_params: dict[str, Any],
         command_args: list[str],
         output_json_path: str,
+        run_timeout_seconds: int,
         api_key_env: str,
         api_key: str,
         credential_alias: Optional[str],
@@ -743,7 +756,7 @@ class Tools:
                 payload = await self._run_au_vendor_json(
                     command_args=command_args,
                     output_json_path=output_json_path,
-                    timeout_seconds=self.valves.SUBPROCESS_TIMEOUT_SECONDS,
+                    timeout_seconds=max(30, int(run_timeout_seconds)),
                     api_key_env=api_key_env,
                     api_key=api_key,
                 )
@@ -871,6 +884,7 @@ class Tools:
         resolved_model = str(model or self.valves.DEFAULT_MODEL).strip() or self.valves.DEFAULT_MODEL
         resolved_size = str(size or self.valves.DEFAULT_SIZE).strip() or self.valves.DEFAULT_SIZE
         resolved_quality = str(quality or self.valves.DEFAULT_QUALITY).strip() or self.valves.DEFAULT_QUALITY
+        resolved_timeout_seconds = self._resolve_job_timeout_seconds(requested_n=int(n or 1))
 
         task_id = f"btnimg2_{uuid.uuid4().hex[:16]}"
         artifacts = self._resolve_task_artifact_paths(task_id=task_id, user_id=user_id)
@@ -879,6 +893,7 @@ class Tools:
             "n": int(n or 1),
             "size": resolved_size,
             "quality": resolved_quality,
+            "subprocess_timeout_seconds": resolved_timeout_seconds,
             "json_file": artifacts["json_file"],
             "image_output_dir": artifacts["image_output_dir"],
         }
@@ -940,6 +955,7 @@ class Tools:
             generation_params=generation_params,
             command_args=args,
             output_json_path=artifacts["json_file"],
+            run_timeout_seconds=resolved_timeout_seconds,
             api_key_env=api_key_env,
             api_key=resolved_api_key,
             credential_alias=resolved_credential_alias,
@@ -1068,6 +1084,7 @@ class Tools:
         resolved_size = str(size or self.valves.DEFAULT_SIZE).strip() or self.valves.DEFAULT_SIZE
         resolved_quality = str(quality or self.valves.DEFAULT_QUALITY).strip() or self.valves.DEFAULT_QUALITY
         resolved_include_hint = True if include_image_order_hint is None else bool(include_image_order_hint)
+        resolved_timeout_seconds = self._resolve_job_timeout_seconds(requested_n=int(n or 1))
 
         media_bridge_result = await self._resolve_au_image_inputs(
             prompt_text=prompt_text,
@@ -1119,6 +1136,7 @@ class Tools:
             "n": int(n or 1),
             "size": resolved_size,
             "quality": resolved_quality,
+            "subprocess_timeout_seconds": resolved_timeout_seconds,
             "include_image_order_hint": resolved_include_hint,
             "json_file": artifacts["json_file"],
             "image_output_dir": artifacts["image_output_dir"],
@@ -1193,6 +1211,7 @@ class Tools:
             generation_params=generation_params,
             command_args=args,
             output_json_path=artifacts["json_file"],
+            run_timeout_seconds=resolved_timeout_seconds,
             api_key_env=api_key_env,
             api_key=resolved_api_key,
             credential_alias=resolved_credential_alias,
