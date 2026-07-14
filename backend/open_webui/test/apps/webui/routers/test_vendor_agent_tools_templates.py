@@ -581,8 +581,7 @@ def test_btn_image2_gen_defaults_and_task_bridge(monkeypatch):
     assert "1024x1792" in command_args
     assert "--quality" in command_args
     assert "auto" in command_args
-    assert "--response-format" in command_args
-    assert "url" in command_args
+    assert "--response-format" not in command_args
     assert "--save-images" in command_args
     assert "--full-json" not in command_args
     assert "--output" not in command_args
@@ -600,6 +599,7 @@ def test_btn_image2_gen_defaults_and_task_bridge(monkeypatch):
     generation_params = bridge_calls[0].get("generation_params")
     assert isinstance(generation_params, dict)
     assert generation_params.get("json_file") == payload["json_file"]
+    assert "response_format" not in generation_params
     assert payload.get("credential_alias") == "k3"
     assert payload.get("routing_group_id") == "grp_seedance_k3"
 

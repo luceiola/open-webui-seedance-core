@@ -847,7 +847,6 @@ class Tools:
         resolved_model = str(model or self.valves.DEFAULT_MODEL).strip() or self.valves.DEFAULT_MODEL
         resolved_size = str(size or self.valves.DEFAULT_SIZE).strip() or self.valves.DEFAULT_SIZE
         resolved_quality = str(quality or self.valves.DEFAULT_QUALITY).strip() or self.valves.DEFAULT_QUALITY
-        resolved_response_format = str(response_format or "").strip() or "url"
 
         task_id = f"btnimg2_{uuid.uuid4().hex[:16]}"
         artifacts = self._resolve_task_artifact_paths(task_id=task_id, user_id=user_id)
@@ -858,7 +857,6 @@ class Tools:
             "quality": resolved_quality,
             "json_file": artifacts["json_file"],
             "image_output_dir": artifacts["image_output_dir"],
-            "response_format": resolved_response_format,
         }
 
         await self._bridge_upsert_task(
@@ -897,7 +895,6 @@ class Tools:
             args.extend(["--output-compression", str(int(output_compression))])
         if moderation:
             args.extend(["--moderation", str(moderation).strip()])
-        args.extend(["--response-format", resolved_response_format])
         if style:
             args.extend(["--style", str(style).strip()])
         if stream is not None:

@@ -63,7 +63,6 @@ version_registry: templates/versions/registry.json
 1. 禁止使用 `--full-json`。
 2. 必须使用 `--output <json_file>`，完整响应仅落盘，不回传正文。
 3. 必须保持 `--save-images`。
-4. `btn-image2-gen` 在用户未显式指定时，优先使用 `--response-format url`。
 
 ## 输出约束
 
