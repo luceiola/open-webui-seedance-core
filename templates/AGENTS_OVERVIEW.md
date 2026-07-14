@@ -77,7 +77,32 @@
   - `get_media_asset`
   - `get_media_asset_url`
 
-## 6) 其他文件说明
+## 6) RunningHub Seedance2 视频 Agent（au vendor）
+
+- 用途：调用 `au vendor rh-seedance2-video / rh-seedance2-mini-video / rh-seedance2-fast-video` 进行多模态视频生成，支持统一任务中心可见与状态刷新。
+- System Prompt：`prompts/runninghub_seedance2_system_prompt.txt`
+- Skill：`skills/runninghub-seedance2-execution-skill/SKILL.md`
+- Tool：`runninghub_seedance2_tool.py`
+- Import 包：`runninghub_seedance2_tool_v1.import.json`（`id=runninghub_seedance2_tool_v1`）
+- 关键入口函数：
+  - `generate_video_with_runninghub_seedance2`
+  - `list_generation_tasks`
+  - `get_generation_task_status`
+  - `wait_generation_task`
+
+## 7) BTN Image2 图片 Agent（au vendor）
+
+- 用途：调用 `au vendor btn-image2-gen / btn-image2-edit`，默认 9:16 竖屏尺寸与 auto 质量，支持多图参考并写入统一任务中心。
+- 说明：该 Agent 为直接等待完成型，不提供查询方法。
+- System Prompt：`prompts/btn_image2_system_prompt.txt`
+- Skill：`skills/btn-image2-execution-skill/SKILL.md`
+- Tool：`btn_image2_tool.py`
+- Import 包：`btn_image2_tool_v1.import.json`（`id=btn_image2_tool_v1`）
+- 关键入口函数：
+  - `generate_image_with_btn_image2_gen`
+  - `edit_image_with_btn_image2`
+
+## 8) 其他文件说明
 
 - `skills/seedance-user-guide-skill/SKILL.md`：固定版用户手册输出技能（说明类，不负责生成任务）。
 - `prompts/seedance_video_description_prompt.txt`：视频描述模板提示词（模板用途，非主编排 Agent）。

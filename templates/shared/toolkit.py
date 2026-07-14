@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlencode
 
 import httpx
 from fastapi import Request
@@ -14,6 +17,8 @@ REQUEST_ID_PATTERNS = (
 
 _REFERENCE_PATTERN = re.compile(r"%([^\s%,，。；;:：!！?？)）\]】}》>\"“”'`]+)")
 _REFERENCE_SUFFIX = ".,;:!?)\\]}>'\"，。；：！？】）》"
+_MEDIA_REF_SUFFIX = ".,;:!?)\\]}>'\"，。；：！？】）》"
+_MEDIA_TYPES = {"image", "video", "audio"}
 
 
 def build_base_url(__request__: Optional[Request], fallback_base_url: str) -> str:
@@ -215,6 +220,324 @@ def compact_media_asset_item(item: dict[str, Any]) -> dict[str, Any]:
         "created_at": item.get("created_at"),
         "updated_at": item.get("updated_at"),
     }
+
+
+def _is_http_url(value: str) -> bool:
+    text = str(value or "").strip()
+    return text.startswith(("http://", "https://"))
+
+
+def _normalize_media_asset_candidates(item: dict[str, Any]) -> list[str]:
+    candidates: list[str] = []
+    for key in ("relative_path", "display_name", "original_filename"):
+        value = str(item.get(key) or "").strip()
+        if value and value not in candidates:
+            candidates.append(value)
+    return candidates
+
+
+def _media_ref_tokens(value: str, *, workdir: str = "") -> list[str]:
+    raw = str(value or "").strip().strip("\"'")
+    if not raw:
+        return []
+
+    out: list[str] = []
+
+    def add_token(token: str) -> None:
+        text = str(token or "").strip().strip("\"'")
+        if not text:
+            return
+        text = text.rstrip(_MEDIA_REF_SUFFIX)
+        if text.startswith("%"):
+            text = text[1:]
+        if text.startswith("./"):
+            text = text[2:]
+        if text.startswith("/"):
+            text = text.lstrip("/")
+        if text and text not in out:
+            out.append(text)
+
+    add_token(raw)
+
+    p = Path(raw)
+    add_token(p.name)
+
+    resolved_workdir = str(Path(workdir).expanduser().resolve()) if str(workdir or "").strip() else ""
+    if resolved_workdir and raw.startswith(resolved_workdir):
+        rel = raw[len(resolved_workdir):].lstrip("/\\")
+        add_token(rel)
+        add_token(Path(rel).name)
+
+    if "/%" in raw or "\\%" in raw:
+        add_token(Path(raw).name)
+
+    return out
+
+
+class AUMediaReferenceBridge:
+    """
+    Resolve WebUI-style media references (for example `%image_001.png`) into usable
+    http(s) URLs before handing arguments to `au vendor ...`.
+    """
+
+    def __init__(
+        self,
+        *,
+        __request__: Optional[Request],
+        request_timeout_seconds: int,
+        openwebui_base_url: str,
+        openwebui_api_key: str,
+        chat_id: str = "",
+        status: str = "active",
+        url_expires_in: int = 3600,
+    ) -> None:
+        self.__request__ = __request__
+        self.request_timeout_seconds = int(request_timeout_seconds)
+        self.openwebui_base_url = str(openwebui_base_url or "").strip()
+        self.openwebui_api_key = str(openwebui_api_key or "").strip()
+        self.chat_id = str(chat_id or "").strip()
+        self.status = str(status or "active").strip() or "active"
+        self.url_expires_in = max(60, min(int(url_expires_in or 3600), 7 * 24 * 3600))
+
+        self._loaded = False
+        self._asset_item_by_type: dict[str, dict[str, dict[str, Any]]] = {t: {} for t in _MEDIA_TYPES}
+        self._alias_to_ref_by_type: dict[str, dict[str, str]] = {t: {} for t in _MEDIA_TYPES}
+        self._basename_to_ref_by_type: dict[str, dict[str, list[str]]] = {t: {} for t in _MEDIA_TYPES}
+        self._available_refs_by_type: dict[str, list[str]] = {t: [] for t in _MEDIA_TYPES}
+        self._asset_url_cache: dict[str, Optional[str]] = {}
+
+    async def _request_openwebui(self, method: str, path: str) -> dict[str, Any]:
+        return await request_openwebui_json(
+            method=method,
+            path=path,
+            __request__=self.__request__,
+            timeout_seconds=self.request_timeout_seconds,
+            openwebui_base_url=self.openwebui_base_url,
+            openwebui_api_key=self.openwebui_api_key,
+            body=None,
+        )
+
+    async def _load_assets(self) -> None:
+        if self._loaded:
+            return
+
+        page_size = 200
+        offset = 0
+        rows: list[dict[str, Any]] = []
+        while True:
+            query: dict[str, Any] = {"limit": page_size, "offset": offset}
+            if self.status:
+                query["status"] = self.status
+            if self.chat_id:
+                query["chat_id"] = self.chat_id
+            path = f"/api/v1/media-assets/?{urlencode(query)}"
+            result = await self._request_openwebui("GET", path)
+            if not result.get("ok"):
+                self._loaded = True
+                return
+
+            page_rows = [row for row in (result.get("data") or []) if isinstance(row, dict)]
+            rows.extend(page_rows)
+            if len(page_rows) < page_size:
+                break
+            offset += page_size
+            if offset >= 4000:
+                break
+
+        for item in rows:
+            media_type = str(item.get("media_type") or "").strip().lower()
+            if media_type not in _MEDIA_TYPES:
+                continue
+
+            candidates = _normalize_media_asset_candidates(item)
+            if not candidates:
+                continue
+            canonical_ref = candidates[0]
+            item_map = self._asset_item_by_type[media_type]
+            alias_map = self._alias_to_ref_by_type[media_type]
+            basename_map = self._basename_to_ref_by_type[media_type]
+            available = self._available_refs_by_type[media_type]
+
+            if canonical_ref not in item_map:
+                item_map[canonical_ref] = item
+                available.append(canonical_ref)
+
+            for candidate in candidates:
+                if candidate and candidate not in alias_map:
+                    alias_map[candidate] = canonical_ref
+
+            basename = Path(canonical_ref).name
+            if basename:
+                refs = basename_map.setdefault(basename, [])
+                if canonical_ref not in refs:
+                    refs.append(canonical_ref)
+
+        self._loaded = True
+
+    async def _asset_url(self, asset_id: str) -> Optional[str]:
+        aid = str(asset_id or "").strip()
+        if not aid:
+            return None
+        if aid in self._asset_url_cache:
+            return self._asset_url_cache[aid]
+
+        path = f"/api/v1/media-assets/{aid}/url?{urlencode({'expires_in': self.url_expires_in})}"
+        result = await self._request_openwebui("GET", path)
+        if not result.get("ok"):
+            self._asset_url_cache[aid] = None
+            return None
+
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        url = str(data.get("url") or "").strip()
+        if not _is_http_url(url):
+            url = ""
+        self._asset_url_cache[aid] = url or None
+        return self._asset_url_cache[aid]
+
+    def _match_reference(self, *, media_type: str, tokens: list[str]) -> tuple[Optional[str], list[str]]:
+        alias_map = self._alias_to_ref_by_type.get(media_type) or {}
+        basename_map = self._basename_to_ref_by_type.get(media_type) or {}
+
+        for token in tokens:
+            ref = alias_map.get(token)
+            if ref:
+                return ref, []
+
+        ambiguous: list[str] = []
+        for token in tokens:
+            basename = Path(token).name
+            if not basename:
+                continue
+            refs = basename_map.get(basename) or []
+            if len(refs) == 1:
+                return refs[0], []
+            if len(refs) > 1:
+                ambiguous.extend(refs)
+
+        return None, sorted(list(dict.fromkeys(ambiguous)))
+
+    async def resolve_media_inputs(
+        self,
+        *,
+        values: Optional[list[str]],
+        media_type: str,
+        workdir: str = "",
+    ) -> dict[str, Any]:
+        target_type = str(media_type or "").strip().lower()
+        if target_type not in _MEDIA_TYPES:
+            return {
+                "ok": False,
+                "status_code": 400,
+                "error_code": "InvalidParameter",
+                "error_message": f"Unsupported media_type: {media_type}",
+                "resolved_values": [],
+                "prompt_resources": [],
+            }
+
+        cleaned_values: list[str] = []
+        for value in values or []:
+            text = str(value or "").strip()
+            if text:
+                cleaned_values.append(text)
+
+        if not cleaned_values:
+            return {
+                "ok": True,
+                "status_code": 200,
+                "resolved_values": [],
+                "prompt_resources": [],
+                "missing_references": [],
+                "ambiguous_references": [],
+                "available_references": [],
+                "unresolved_inputs": [],
+            }
+
+        await self._load_assets()
+
+        resolved_values: list[str] = []
+        prompt_resources: list[dict[str, str]] = []
+        missing_references: list[str] = []
+        ambiguous_references: list[dict[str, Any]] = []
+        unresolved_inputs: list[dict[str, Any]] = []
+
+        workdir_path = Path(workdir).expanduser().resolve() if str(workdir or "").strip() else None
+        item_map = self._asset_item_by_type.get(target_type) or {}
+        available_references = sorted(list(dict.fromkeys(self._available_refs_by_type.get(target_type) or [])))
+
+        for raw in cleaned_values:
+            if _is_http_url(raw):
+                resolved_values.append(raw)
+                prompt_resources.append({"name": Path(raw).name or f"{target_type}_ref", "url": raw})
+                continue
+
+            candidate_path = Path(raw).expanduser()
+            if candidate_path.exists() and candidate_path.is_file():
+                resolved_values.append(str(candidate_path.resolve()))
+                continue
+            if not candidate_path.is_absolute() and workdir_path is not None:
+                joined = (workdir_path / raw).resolve()
+                if joined.exists() and joined.is_file():
+                    resolved_values.append(str(joined))
+                    continue
+
+            tokens = _media_ref_tokens(raw, workdir=str(workdir_path or ""))
+            ref, ambiguous = self._match_reference(media_type=target_type, tokens=tokens)
+            if ambiguous:
+                ambiguous_references.append(
+                    {
+                        "input": raw,
+                        "tokens": tokens,
+                        "candidates": ambiguous,
+                    }
+                )
+                unresolved_inputs.append({"input": raw, "reason": "ambiguous_reference"})
+                continue
+
+            if not ref:
+                missing_references.append(raw)
+                unresolved_inputs.append({"input": raw, "reason": "missing_reference"})
+                continue
+
+            item = item_map.get(ref) or {}
+            asset_id = str(item.get("asset_id") or "").strip()
+            url = await self._asset_url(asset_id)
+            if not url:
+                unresolved_inputs.append(
+                    {
+                        "input": raw,
+                        "asset_id": asset_id or None,
+                        "reason": "asset_url_unavailable",
+                    }
+                )
+                continue
+
+            resolved_values.append(url)
+            prompt_resources.append({"name": ref, "url": url})
+
+        if unresolved_inputs:
+            return {
+                "ok": False,
+                "status_code": 400,
+                "error_code": "MissingMediaAssetReferences",
+                "error_message": f"Failed to resolve some {target_type} references",
+                "resolved_values": resolved_values,
+                "prompt_resources": prompt_resources,
+                "missing_references": sorted(list(dict.fromkeys(missing_references))),
+                "ambiguous_references": ambiguous_references,
+                "available_references": available_references,
+                "unresolved_inputs": unresolved_inputs,
+            }
+
+        return {
+            "ok": True,
+            "status_code": 200,
+            "resolved_values": resolved_values,
+            "prompt_resources": prompt_resources,
+            "missing_references": [],
+            "ambiguous_references": [],
+            "available_references": available_references,
+            "unresolved_inputs": [],
+        }
 
 
 async def bridge_upsert(

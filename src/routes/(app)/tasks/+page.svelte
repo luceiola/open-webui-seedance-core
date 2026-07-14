@@ -54,6 +54,8 @@
 	let selectedTaskParamEntries: Array<[string, string]> = [];
 	let selectedTaskIsFailed = false;
 	let selectedTaskFailureReason = '';
+	let selectedTaskPreviewImageUrl = '';
+	let selectedTaskImageUrls: string[] = [];
 
 	type PromptSegment = {
 		text: string;
@@ -80,6 +82,33 @@
 	const statusLabel = (value?: string | null) => {
 		const normalized = String(value || '').toUpperCase();
 		return normalized || 'UNKNOWN';
+	};
+
+	const getTaskImageUrls = (task: GenerationTaskItem): string[] => {
+		const candidates: string[] = [];
+		const appendIfPresent = (value?: string | null) => {
+			const text = String(value || '').trim();
+			if (!text) return;
+			candidates.push(text);
+		};
+
+		appendIfPresent(task.primary_image_url);
+		if (Array.isArray(task.image_urls)) {
+			task.image_urls.forEach((value) => appendIfPresent(value));
+		}
+		if (String(task.artifact_kind || '').toLowerCase() === 'image') {
+			appendIfPresent(task.thumbnail_url);
+		}
+
+		return Array.from(new Set(candidates));
+	};
+
+	const getTaskPreviewImageUrl = (task: GenerationTaskItem): string => {
+		const thumb = String(task.thumbnail_url || '').trim();
+		if (thumb) return thumb;
+
+		const images = getTaskImageUrls(task);
+		return images[0] || '';
 	};
 
 	const taskRowKey = (task: GenerationTaskItem) =>
@@ -297,6 +326,9 @@
 			archive_status: preview.archive_status ?? task.archive_status,
 			download_ready: preview.download_ready ?? task.download_ready,
 			can_delete: preview.can_delete ?? task.can_delete,
+			artifact_kind: preview.artifact_kind ?? task.artifact_kind,
+			image_urls: preview.image_urls ?? task.image_urls,
+			primary_image_url: preview.primary_image_url ?? task.primary_image_url,
 			thumbnail_url: preview.thumbnail_url ?? task.thumbnail_url,
 			video_preview_url: preview.video_preview_url ?? task.video_preview_url
 		};
@@ -447,6 +479,8 @@
 	$: selectedTaskParamEntries = selectedTask ? getGenerationParamEntries(selectedTask) : [];
 	$: selectedTaskIsFailed = selectedTask ? isFailedTask(selectedTask) : false;
 	$: selectedTaskFailureReason = selectedTask ? getFailureReason(selectedTask) : '';
+	$: selectedTaskPreviewImageUrl = selectedTask ? getTaskPreviewImageUrl(selectedTask) : '';
+	$: selectedTaskImageUrls = selectedTask ? getTaskImageUrls(selectedTask) : [];
 	$: if (initialized) {
 		selectedUserId;
 		selectedGroupId;
@@ -609,9 +643,9 @@
 								}
 							}}
 						>
-							{#if task.thumbnail_url}
+							{#if getTaskPreviewImageUrl(task)}
 								<img
-									src={toAssetUrl(task.thumbnail_url)}
+									src={toAssetUrl(getTaskPreviewImageUrl(task))}
 									alt={`task-${task.task_id}`}
 									class="w-full h-full object-cover"
 									loading="lazy"
@@ -717,19 +751,39 @@
 						playsinline
 						preload="metadata"
 					></video>
-				{:else if selectedTask.thumbnail_url}
+				{:else if selectedTaskPreviewImageUrl}
 					<img
 						class="w-full max-h-[72vh] object-contain"
-						src={toAssetUrl(selectedTask.thumbnail_url)}
+						src={toAssetUrl(selectedTaskPreviewImageUrl)}
 						alt={`task-preview-${selectedTask.task_id}`}
 						loading="lazy"
 					/>
 				{:else}
 					<div class="w-full h-[40vh] flex items-center justify-center text-sm text-gray-400">
-						暂无可预览视频
+						暂无可预览媒体
 					</div>
 				{/if}
 			</div>
+
+			{#if selectedTaskImageUrls.length > 1}
+				<div class="mt-2 flex gap-2 overflow-x-auto pb-1">
+					{#each selectedTaskImageUrls as imageUrl (`preview-image-${selectedTask.task_id}-${imageUrl}`)}
+						<a
+							class="shrink-0 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700"
+							href={imageUrl}
+							target="_blank"
+							rel="noreferrer noopener"
+						>
+							<img
+								src={toAssetUrl(imageUrl)}
+								alt={`task-preview-thumb-${selectedTask.task_id}`}
+								class="w-16 h-16 object-cover"
+								loading="lazy"
+							/>
+						</a>
+					{/each}
+				</div>
+			{/if}
 
 				<div class="task-detail-section">
 					<div class="task-detail-title">提示词</div>

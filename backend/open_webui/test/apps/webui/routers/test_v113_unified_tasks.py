@@ -559,6 +559,202 @@ def test_unified_tasks_prompt_fields_are_backward_compatible(tasks_router_module
     assert response.items[1].prompt_resources == []
 
 
+def test_unified_tasks_list_includes_image_artifact_fields(tasks_router_module):
+    tasks_module, material_stub = tasks_router_module
+
+    task_records = {
+        'task-image': {
+            'task_id': 'task-image',
+            'provider': 'btn_image2',
+            'status': 'SUCCEEDED',
+            'archive_status': 'NOT_REQUIRED',
+            'created_at': 200,
+            'updated_at': 210,
+            'download_ready': False,
+            'user_name': 'Alice',
+            'artifact_kind': 'image',
+            'image_urls': [
+                'https://example.com/out-1.png',
+                'https://example.com/out-2.png',
+                'ftp://invalid.example.com/out-3.png',
+            ],
+            'primary_image_url': 'https://example.com/out-1.png',
+        }
+    }
+
+    material_stub._iter_task_record_paths = lambda: [('user-1', Path('/tmp/task-image.json'))]
+    material_stub._load_task_record_from_path = lambda path: dict(task_records[path.stem])
+    material_stub._normalize_task_defaults = lambda item, owner_user_id: False
+    material_stub._should_refresh_task_status = lambda item, refresh_min_interval_seconds: False
+    material_stub._is_soft_deleted = lambda item: False
+    material_stub._generation_skill_from_model = lambda model: 'btn-image2'
+
+    requester = StubUserModel(id='admin-1', role='admin')
+    response = _run(
+        tasks_module.list_unified_tasks(
+            user_id=None,
+            provider=None,
+            skill_name=None,
+            tool_name=None,
+            task_status=None,
+            model=None,
+            group_id=None,
+            start_at=None,
+            end_at=None,
+            include_deleted=False,
+            refresh_status=False,
+            refresh_min_interval_seconds=5,
+            offset=0,
+            limit=48,
+            user=requester,
+        )
+    )
+
+    assert response.total == 1
+    assert response.items[0].id == 'task-image'
+    assert response.items[0].artifact_kind == 'image'
+    assert response.items[0].image_urls == ['https://example.com/out-1.png', 'https://example.com/out-2.png']
+    assert response.items[0].primary_image_url == 'https://example.com/out-1.png'
+    assert response.items[0].thumbnail_url == 'https://example.com/out-1.png'
+
+
+def test_unified_task_preview_returns_image_fields(tasks_router_module):
+    tasks_module, material_stub = tasks_router_module
+
+    async def _load_task_for_read(task_id, **kwargs):
+        _ = kwargs
+        return 'user-1', {
+            'task_id': task_id,
+            'provider': 'btn_image2',
+            'status': 'SUCCEEDED',
+            'archive_status': 'NOT_REQUIRED',
+            'download_ready': False,
+            'created_at': 10,
+            'updated_at': 20,
+            'artifact_kind': 'image',
+            'image_urls': ['https://example.com/preview.png'],
+            'primary_image_url': 'https://example.com/preview.png',
+        }
+
+    material_stub._load_task_for_read = _load_task_for_read
+    requester = StubUserModel(id='user-1', role='user')
+
+    response = _run(tasks_module.get_unified_task_preview(task_id='task-image', refresh_status=False, user=requester))
+
+    assert response.task_id == 'task-image'
+    assert response.artifact_kind == 'image'
+    assert response.image_urls == ['https://example.com/preview.png']
+    assert response.primary_image_url == 'https://example.com/preview.png'
+    assert response.thumbnail_url == 'https://example.com/preview.png'
+
+
+def test_unified_tasks_list_falls_back_to_local_image_proxy_urls(tasks_router_module, tmp_path):
+    tasks_module, material_stub = tasks_router_module
+    owner_user_id = 'user-1'
+    task_id = 'task-image-local'
+
+    user_root = tmp_path / 'cache' / 'material_packages' / owner_user_id
+    image_dir = user_root / 'task_vendor_artifacts' / 'btn_image2' / task_id / 'images'
+    image_dir.mkdir(parents=True, exist_ok=True)
+    (image_dir / 'image_001.png').write_bytes(b'fake-image-1')
+    (image_dir / 'image_002.png').write_bytes(b'fake-image-2')
+
+    task_records = {
+        task_id: {
+            'task_id': task_id,
+            'provider': 'btn_image2',
+            'status': 'SUCCEEDED',
+            'archive_status': 'NOT_REQUIRED',
+            'created_at': 200,
+            'updated_at': 210,
+            'download_ready': False,
+            'user_name': 'Alice',
+            'artifact_kind': 'image',
+            'image_urls': [],
+            'primary_image_url': None,
+            'generation_params': {
+                'saved_image_dir': str(image_dir),
+                'image_files': "['image_001.png', 'image_002.png']",
+            },
+        }
+    }
+
+    material_stub._iter_task_record_paths = lambda: [(owner_user_id, Path(f'/tmp/{task_id}.json'))]
+    material_stub._load_task_record_from_path = lambda path: dict(task_records[path.stem])
+    material_stub._normalize_task_defaults = lambda item, owner_user_id: False
+    material_stub._should_refresh_task_status = lambda item, refresh_min_interval_seconds: False
+    material_stub._is_soft_deleted = lambda item: False
+    material_stub._generation_skill_from_model = lambda model: 'btn-image2'
+    material_stub._user_root_dir = lambda uid: tmp_path / 'cache' / 'material_packages' / str(uid)
+
+    requester = StubUserModel(id='admin-1', role='admin')
+    response = _run(
+        tasks_module.list_unified_tasks(
+            user_id=None,
+            provider=None,
+            skill_name=None,
+            tool_name=None,
+            task_status=None,
+            model=None,
+            group_id=None,
+            start_at=None,
+            end_at=None,
+            include_deleted=False,
+            refresh_status=False,
+            refresh_min_interval_seconds=5,
+            offset=0,
+            limit=48,
+            user=requester,
+        )
+    )
+
+    assert response.total == 1
+    assert response.items[0].id == task_id
+    assert response.items[0].image_urls == [
+        f'/api/v1/tasks/{task_id}/images/0',
+        f'/api/v1/tasks/{task_id}/images/1',
+    ]
+    assert response.items[0].primary_image_url == f'/api/v1/tasks/{task_id}/images/0'
+    assert response.items[0].thumbnail_url == f'/api/v1/tasks/{task_id}/images/0'
+
+
+def test_unified_task_image_route_streams_local_image(tasks_router_module, tmp_path):
+    tasks_module, material_stub = tasks_router_module
+    owner_user_id = 'user-1'
+    task_id = 'task-image-route'
+
+    user_root = tmp_path / 'cache' / 'material_packages' / owner_user_id
+    image_dir = user_root / 'task_vendor_artifacts' / 'btn_image2' / task_id / 'images'
+    image_dir.mkdir(parents=True, exist_ok=True)
+    image_file = image_dir / 'image_001.png'
+    image_file.write_bytes(b'fake-image')
+
+    async def _load_task_for_read(task_id_arg, **kwargs):
+        _ = kwargs
+        return owner_user_id, {
+            'task_id': task_id_arg,
+            'artifact_kind': 'image',
+            'generation_params': {
+                'saved_image_dir': str(image_dir),
+                'image_files': "['image_001.png']",
+            },
+            'status': 'SUCCEEDED',
+            'archive_status': 'NOT_REQUIRED',
+            'download_ready': False,
+            'created_at': 10,
+            'updated_at': 20,
+        }
+
+    material_stub._load_task_for_read = _load_task_for_read
+    material_stub._user_root_dir = lambda uid: tmp_path / 'cache' / 'material_packages' / str(uid)
+
+    requester = StubUserModel(id='user-1', role='user')
+    response = _run(tasks_module.get_unified_task_image(task_id=task_id, index=0, user=requester))
+
+    assert Path(response.path) == image_file
+    assert response.media_type == 'image/png'
+
+
 def test_unified_tasks_backfills_error_fields_from_raw_payload(tasks_router_module):
     tasks_module, material_stub = tasks_router_module
 

@@ -22,6 +22,9 @@ export type GenerationTaskItem = {
 	ratio?: string | null;
 	watermark?: boolean | null;
 	generate_audio?: boolean | null;
+	artifact_kind?: string | null;
+	image_urls?: string[];
+	primary_image_url?: string | null;
 	thumbnail_url?: string | null;
 	video_preview_url?: string | null;
 	video_download_url?: string | null;
@@ -75,6 +78,9 @@ type UnifiedTaskApiItem = {
 	created_at?: number;
 	updated_at?: number;
 	finished_at?: number | null;
+	artifact_kind?: string | null;
+	image_urls?: string[] | null;
+	primary_image_url?: string | null;
 	thumbnail_url?: string | null;
 	video_preview_url?: string | null;
 	video_download_url?: string | null;
@@ -110,6 +116,9 @@ export type GenerationTaskPreview = {
 	archive_status?: string | null;
 	download_ready: boolean;
 	can_delete: boolean;
+	artifact_kind?: string | null;
+	image_urls?: string[];
+	primary_image_url?: string | null;
 	thumbnail_url?: string | null;
 	video_preview_url?: string | null;
 };
@@ -122,6 +131,14 @@ const buildAuthHeaders = (token: string): HeadersInit => ({
 
 const mapUnifiedTaskToLegacy = (item: UnifiedTaskApiItem): GenerationTaskItem => {
 	const taskId = item.id || item.provider_task_id || '';
+	const imageUrls = Array.isArray(item.image_urls)
+		? item.image_urls.map((entry) => String(entry || '').trim()).filter(Boolean)
+		: [];
+	const primaryImageUrl = String(item.primary_image_url || '').trim() || null;
+	const artifactKind =
+		String(item.artifact_kind || '').trim() ||
+		(primaryImageUrl || imageUrls.length > 0 ? 'image' : 'video');
+	const thumbnailUrl = item.thumbnail_url ?? primaryImageUrl ?? imageUrls[0] ?? null;
 	return {
 		task_id: taskId,
 		user_id: item.user_id ?? null,
@@ -144,10 +161,15 @@ const mapUnifiedTaskToLegacy = (item: UnifiedTaskApiItem): GenerationTaskItem =>
 		ratio: null,
 		watermark: null,
 		generate_audio: null,
-		thumbnail_url: item.thumbnail_url ?? null,
+		artifact_kind: artifactKind,
+		image_urls: imageUrls,
+		primary_image_url: primaryImageUrl,
+		thumbnail_url: thumbnailUrl,
 		video_preview_url: item.video_preview_url ?? null,
 		video_download_url:
-			item.video_download_url ?? `/api/v1/tasks/${encodeURIComponent(taskId)}/download`,
+			artifactKind === 'image'
+				? null
+				: item.video_download_url ?? `/api/v1/tasks/${encodeURIComponent(taskId)}/download`,
 		video_url: null,
 		error_code: item.error_code ?? null,
 		error_message: item.error_message ?? null,

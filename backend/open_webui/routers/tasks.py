@@ -3,6 +3,8 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from pydantic import BaseModel, Field
 from typing import Any, Optional
+from pathlib import Path
+import ast
 import mimetypes
 import logging
 import re
@@ -100,6 +102,9 @@ class UnifiedTaskItem(BaseModel):
     created_at: int
     updated_at: int
     finished_at: Optional[int] = None
+    artifact_kind: Optional[str] = None
+    image_urls: list[str] = Field(default_factory=list)
+    primary_image_url: Optional[str] = None
     thumbnail_url: Optional[str] = None
     video_preview_url: Optional[str] = None
     video_download_url: Optional[str] = None
@@ -165,6 +170,9 @@ class UnifiedTaskPreviewResponse(BaseModel):
     archive_status: str
     download_ready: bool
     can_delete: bool
+    artifact_kind: Optional[str] = None
+    image_urls: list[str] = Field(default_factory=list)
+    primary_image_url: Optional[str] = None
     thumbnail_url: Optional[str] = None
     video_preview_url: Optional[str] = None
 
@@ -254,6 +262,108 @@ def _normalize_task_bridge_artifact_kind(value: Optional[str]) -> Optional[str]:
     if kind in {'video', 'image'}:
         return kind
     return None
+
+
+def _parse_string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        rows = [str(item or '').strip() for item in value]
+        return [item for item in rows if item]
+
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            parsed = ast.literal_eval(text)
+        except Exception:
+            return []
+        if isinstance(parsed, list):
+            rows = [str(item or '').strip() for item in parsed]
+            return [item for item in rows if item]
+
+    return []
+
+
+def _resolve_local_task_image_paths(owner_user_id: str, item: dict[str, Any]) -> list[Path]:
+    generation_params = item.get('generation_params')
+    if not isinstance(generation_params, dict):
+        return []
+
+    image_output_dir_text = str(
+        generation_params.get('saved_image_dir')
+        or generation_params.get('image_output_dir')
+        or ''
+    ).strip()
+    if not image_output_dir_text:
+        return []
+
+    image_output_dir = Path(image_output_dir_text).expanduser()
+    if not image_output_dir.is_absolute():
+        return []
+
+    try:
+        image_output_dir = image_output_dir.resolve()
+    except Exception:
+        return []
+
+    user_root_builder = getattr(material_packages_router, '_user_root_dir', None)
+    if callable(user_root_builder):
+        try:
+            user_root = Path(user_root_builder(str(owner_user_id))).resolve()
+            image_output_dir.relative_to(user_root)
+        except Exception:
+            return []
+
+    if not image_output_dir.exists() or not image_output_dir.is_dir():
+        return []
+
+    image_files = _parse_string_list(generation_params.get('image_files'))
+    candidate_paths: list[Path] = []
+
+    if image_files:
+        for value in image_files:
+            filename = Path(str(value or '').strip()).name
+            if not filename:
+                continue
+            candidate = image_output_dir / filename
+            try:
+                candidate = candidate.resolve()
+                candidate.relative_to(image_output_dir)
+            except Exception:
+                continue
+            if not candidate.exists() or not candidate.is_file():
+                continue
+            media_type = mimetypes.guess_type(candidate.name)[0] or ''
+            if not media_type.startswith('image/'):
+                continue
+            candidate_paths.append(candidate)
+    else:
+        try:
+            for child in sorted(image_output_dir.iterdir()):
+                if not child.is_file():
+                    continue
+                media_type = mimetypes.guess_type(child.name)[0] or ''
+                if media_type.startswith('image/'):
+                    candidate_paths.append(child.resolve())
+        except Exception:
+            return []
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for path in candidate_paths:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path)
+    return deduped
+
+
+def _build_local_task_image_proxy_urls(task_id: str, owner_user_id: str, item: dict[str, Any]) -> list[str]:
+    paths = _resolve_local_task_image_paths(owner_user_id, item)
+    if not paths:
+        return []
+    return [f'/api/v1/tasks/{task_id}/images/{idx}' for idx, _ in enumerate(paths)]
 
 
 def _extract_bridge_status_candidate(payload: Optional[dict[str, Any]]) -> Optional[str]:
@@ -400,6 +510,38 @@ def _to_unified_task_item(
             name = str(entry.get('name') or '').strip() or f'resource_{idx + 1}'
             prompt_resources_value.append({'name': name, 'url': url})
 
+    image_urls_value: list[str] = []
+    raw_image_urls = item.get('image_urls')
+    if isinstance(raw_image_urls, list):
+        seen_image_urls: set[str] = set()
+        for entry in raw_image_urls:
+            url = str(entry or '').strip()
+            if not url.startswith(('http://', 'https://')):
+                continue
+            if url in seen_image_urls:
+                continue
+            seen_image_urls.add(url)
+            image_urls_value.append(url)
+
+    primary_image_url_value = str(item.get('primary_image_url') or '').strip() or None
+    if primary_image_url_value and not primary_image_url_value.startswith(('http://', 'https://')):
+        primary_image_url_value = None
+    if not primary_image_url_value and image_urls_value:
+        primary_image_url_value = image_urls_value[0]
+
+    artifact_kind_value = _normalize_task_bridge_artifact_kind(item.get('artifact_kind'))
+    if artifact_kind_value is None:
+        artifact_kind_value = 'image' if primary_image_url_value or image_urls_value else 'video'
+
+    if artifact_kind_value == 'image' and not image_urls_value:
+        image_urls_value = _build_local_task_image_proxy_urls(task_id, owner_user_id, item)
+        if image_urls_value and not primary_image_url_value:
+            primary_image_url_value = image_urls_value[0]
+
+    thumbnail_url_value = item.get('thumbnail_url')
+    if not thumbnail_url_value and artifact_kind_value == 'image':
+        thumbnail_url_value = primary_image_url_value
+
     return UnifiedTaskItem(
         id=task_id,
         provider=provider,
@@ -424,7 +566,10 @@ def _to_unified_task_item(
         created_at=created_at,
         updated_at=updated_at,
         finished_at=finished_at,
-        thumbnail_url=item.get('thumbnail_url'),
+        artifact_kind=artifact_kind_value,
+        image_urls=image_urls_value,
+        primary_image_url=primary_image_url_value,
+        thumbnail_url=thumbnail_url_value,
         video_preview_url=item.get('video_preview_url'),
         video_download_url=item.get('video_download_url'),
         prompt_text=prompt_text_value,
@@ -1515,9 +1660,29 @@ async def get_unified_task_preview(
         archive_status=task_row.archive_status,
         download_ready=task_row.download_ready,
         can_delete=task_row.can_delete,
+        artifact_kind=task_row.artifact_kind,
+        image_urls=list(task_row.image_urls or []),
+        primary_image_url=task_row.primary_image_url,
         thumbnail_url=task_row.thumbnail_url,
         video_preview_url=task_row.video_preview_url,
     )
+
+
+@router.get('/{task_id}/images/{index}')
+async def get_unified_task_image(
+    task_id: str,
+    index: int,
+    user: UserModel = Depends(get_verified_user),
+):
+    _ = user
+    owner_user_id, item = await material_packages_router._load_task_for_read(task_id, refresh_status=False)
+    image_paths = _resolve_local_task_image_paths(owner_user_id, item)
+    if index < 0 or index >= len(image_paths):
+        raise HTTPException(status_code=404, detail='Image not found')
+
+    image_path = image_paths[index]
+    media_type = mimetypes.guess_type(image_path.name)[0] or 'image/png'
+    return FileResponse(path=image_path, media_type=media_type, filename=image_path.name)
 
 
 @router.get('/{task_id}/download')

@@ -1,6 +1,6 @@
 {
   "version": "v1",
-  "updated_at": "2026-05-18T00:00:00+08:00",
+  "updated_at": "2026-07-13T16:40:00+08:00",
   "rules": [
     {
       "rule_id": "R-DSP-001",
@@ -106,6 +106,55 @@
         "kb_scope": [],
         "template_id": "",
         "params": {
+          "model": "gpt-image-2"
+        }
+      }
+    },
+    {
+      "rule_id": "R-RHS2-001",
+      "status": "active",
+      "priority": 100,
+      "intent": "runninghub_seedance2_multimodal_video_generate",
+      "trigger": {
+        "mode": "explicit_or_detected",
+        "conditions": [
+          "contains_video_generation_intent",
+          "contains_multimodal_or_seedance2_model_intent"
+        ]
+      },
+      "route": {
+        "skill": "runninghub-seedance2-execution-skill",
+        "tool": "generate_video_with_runninghub_seedance2",
+        "kb_scope": [],
+        "template_id": "",
+        "params": {
+          "model": "mini",
+          "resolution": "720p",
+          "ratio": "9:16",
+          "duration": 5
+        }
+      }
+    },
+    {
+      "rule_id": "R-BTNI-001",
+      "status": "active",
+      "priority": 100,
+      "intent": "btn_image2_generate_or_edit",
+      "trigger": {
+        "mode": "explicit_or_detected",
+        "conditions": [
+          "contains_image_generation_intent",
+          "contains_btn_or_tapque_intent"
+        ]
+      },
+      "route": {
+        "skill": "btn-image2-execution-skill",
+        "tool": "generate_image_with_btn_image2_gen",
+        "kb_scope": [],
+        "template_id": "",
+        "params": {
+          "size": "1024x1792",
+          "quality": "standard",
           "model": "gpt-image-2"
         }
       }
