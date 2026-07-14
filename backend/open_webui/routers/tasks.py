@@ -5,10 +5,12 @@ from pydantic import BaseModel, Field
 from typing import Any, Optional
 from pathlib import Path
 import ast
+import io
 import mimetypes
 import logging
 import re
 import time
+import zipfile
 
 from open_webui.utils.chat import generate_chat_completion
 from open_webui.utils.task import (
@@ -317,36 +319,32 @@ def _resolve_local_task_image_paths(owner_user_id: str, item: dict[str, Any]) ->
     if not image_output_dir.exists() or not image_output_dir.is_dir():
         return []
 
+    def _append_candidate(path: Path, target: list[Path]) -> None:
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(image_output_dir)
+        except Exception:
+            return
+        if not resolved.exists() or not resolved.is_file():
+            return
+        media_type = mimetypes.guess_type(resolved.name)[0] or ''
+        if not media_type.startswith('image/'):
+            return
+        target.append(resolved)
+
     image_files = _parse_string_list(generation_params.get('image_files'))
     candidate_paths: list[Path] = []
+    for value in image_files:
+        filename = Path(str(value or '').strip()).name
+        if not filename:
+            continue
+        _append_candidate(image_output_dir / filename, candidate_paths)
 
-    if image_files:
-        for value in image_files:
-            filename = Path(str(value or '').strip()).name
-            if not filename:
-                continue
-            candidate = image_output_dir / filename
-            try:
-                candidate = candidate.resolve()
-                candidate.relative_to(image_output_dir)
-            except Exception:
-                continue
-            if not candidate.exists() or not candidate.is_file():
-                continue
-            media_type = mimetypes.guess_type(candidate.name)[0] or ''
-            if not media_type.startswith('image/'):
-                continue
-            candidate_paths.append(candidate)
-    else:
-        try:
-            for child in sorted(image_output_dir.iterdir()):
-                if not child.is_file():
-                    continue
-                media_type = mimetypes.guess_type(child.name)[0] or ''
-                if media_type.startswith('image/'):
-                    candidate_paths.append(child.resolve())
-        except Exception:
-            return []
+    try:
+        for child in sorted(image_output_dir.iterdir()):
+            _append_candidate(child, candidate_paths)
+    except Exception:
+        return []
 
     deduped: list[Path] = []
     seen: set[str] = set()
@@ -364,6 +362,32 @@ def _build_local_task_image_proxy_urls(task_id: str, owner_user_id: str, item: d
     if not paths:
         return []
     return [f'/api/v1/tasks/{task_id}/images/{idx}' for idx, _ in enumerate(paths)]
+
+
+def _build_local_task_images_zip(image_paths: list[Path]) -> bytes:
+    buffer = io.BytesIO()
+    used_names: set[str] = set()
+
+    with zipfile.ZipFile(buffer, mode='w', compression=zipfile.ZIP_DEFLATED) as archive:
+        for index, image_path in enumerate(image_paths):
+            try:
+                payload = image_path.read_bytes()
+            except Exception:
+                continue
+
+            raw_name = image_path.name or f'image_{index + 1:03d}.png'
+            stem = Path(raw_name).stem or f'image_{index + 1:03d}'
+            suffix = Path(raw_name).suffix or '.png'
+            candidate = raw_name
+            seq = 2
+            while candidate in used_names:
+                candidate = f'{stem}_{seq}{suffix}'
+                seq += 1
+
+            used_names.add(candidate)
+            archive.writestr(candidate, payload)
+
+    return buffer.getvalue()
 
 
 def _extract_bridge_status_candidate(payload: Optional[dict[str, Any]]) -> Optional[str]:
@@ -1665,6 +1689,26 @@ async def get_unified_task_preview(
         primary_image_url=task_row.primary_image_url,
         thumbnail_url=task_row.thumbnail_url,
         video_preview_url=task_row.video_preview_url,
+    )
+
+
+@router.get('/{task_id}/images/download')
+async def download_unified_task_images(task_id: str, user: UserModel = Depends(get_verified_user)):
+    _ = user
+    owner_user_id, item = await material_packages_router._load_task_for_read(task_id, refresh_status=False)
+    image_paths = _resolve_local_task_image_paths(owner_user_id, item)
+    if not image_paths:
+        raise HTTPException(status_code=404, detail='Image not found')
+
+    archive_payload = _build_local_task_images_zip(image_paths)
+    if not archive_payload:
+        raise HTTPException(status_code=500, detail='Failed to archive task images')
+
+    filename = f'{task_id}_images.zip'
+    return Response(
+        content=archive_payload,
+        media_type='application/zip',
+        headers={'Content-Disposition': f'attachment; filename="{filename}"'},
     )
 
 

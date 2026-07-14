@@ -424,7 +424,32 @@ export const downloadGenerationTask = async (token: string, taskId: string): Pro
 		try {
 			const body = await resp.json();
 			detail = body?.detail || body?.message || detail;
-		} catch (e) {
+		} catch {
+			// Keep default detail.
+		}
+		throw detail;
+	}
+
+	return resp.blob();
+};
+
+export const downloadGenerationTaskImages = async (token: string, taskId: string): Promise<Blob> => {
+	const resp = await fetch(
+		`${WEBUI_API_BASE_URL}/tasks/${encodeURIComponent(taskId)}/images/download`,
+		{
+			method: 'GET',
+			headers: {
+				authorization: `Bearer ${token}`
+			}
+		}
+	);
+
+	if (!resp.ok) {
+		let detail = 'Failed to download task images';
+		try {
+			const body = await resp.json();
+			detail = body?.detail || body?.message || detail;
+		} catch {
 			// Keep default detail.
 		}
 		throw detail;

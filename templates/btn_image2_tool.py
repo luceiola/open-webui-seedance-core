@@ -124,7 +124,6 @@ class Tools:
             default="",
             description="Optional root directory for btn-image2 task artifacts (json/images).",
         )
-        SUMMARY_IMAGE_FILE_LIMIT: int = Field(default=3, ge=1, le=5)
 
     _PROVIDER = "tapque_image2"
     _SKILL_NAME = "btn-image2"
@@ -429,7 +428,7 @@ class Tools:
             text = str(item or "").strip()
             if text:
                 saved_files.append(text)
-        image_files = saved_files[: max(1, int(self.valves.SUMMARY_IMAGE_FILE_LIMIT))]
+        image_files = list(saved_files)
 
         error_code, error_message, failed_reason = self._extract_failure(payload)
         merged_error = error_message or failed_reason

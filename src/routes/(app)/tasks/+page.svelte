@@ -7,15 +7,16 @@
 	import {
 		deleteGenerationTask,
 		downloadGenerationTask,
+		downloadGenerationTaskImages,
 		getGenerationTaskPreview,
 		listGenerationTaskGroups,
-			listGenerationTaskProviders,
-			listGenerationTaskUsers,
-			listGenerationTasks,
-			type GenerationTaskGroupItem,
-			type GenerationTaskItem,
-			type GenerationTaskUserItem
-		} from '$lib/apis/generation-tasks';
+		listGenerationTaskProviders,
+		listGenerationTaskUsers,
+		listGenerationTasks,
+		type GenerationTaskGroupItem,
+		type GenerationTaskItem,
+		type GenerationTaskUserItem
+	} from '$lib/apis/generation-tasks';
 
 	import UserMenu from '$lib/components/layout/Sidebar/UserMenu.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
@@ -56,6 +57,7 @@
 	let selectedTaskFailureReason = '';
 	let selectedTaskPreviewImageUrl = '';
 	let selectedTaskImageUrls: string[] = [];
+	let selectedTaskImageIndex = 0;
 
 	type PromptSegment = {
 		text: string;
@@ -110,6 +112,12 @@
 		const images = getTaskImageUrls(task);
 		return images[0] || '';
 	};
+
+	const isImageTask = (task: GenerationTaskItem): boolean =>
+		String(task.artifact_kind || '').trim().toLowerCase() === 'image';
+
+	const canTaskDownload = (task: GenerationTaskItem): boolean =>
+		isImageTask(task) ? getTaskImageUrls(task).length > 0 : Boolean(task.download_ready);
 
 	const taskRowKey = (task: GenerationTaskItem) =>
 		`${String(task.user_id || '')}::${String(task.task_id || '')}`;
@@ -336,10 +344,12 @@
 
 	const openPreview = async (task: GenerationTaskItem) => {
 		selectedTask = task;
+		selectedTaskImageIndex = 0;
 		showPreview = true;
 
 		const fresh = await refreshPreviewTask(task);
 		selectedTask = fresh;
+		selectedTaskImageIndex = 0;
 		tasks = tasks.map((item) =>
 			item.task_id === fresh.task_id && String(item.user_id || '') === String(task.user_id || '')
 				? fresh
@@ -348,17 +358,29 @@
 	};
 
 	const handleDownload = async (task: GenerationTaskItem) => {
-		if (!task.download_ready) {
-			toast.error('任务归档尚未完成');
-			return;
-		}
-
 		try {
-			const blob = await downloadGenerationTask(localStorage.token, task.task_id);
+			let blob: Blob;
+			let filename: string;
+			if (isImageTask(task)) {
+				if (getTaskImageUrls(task).length <= 0) {
+					toast.error('任务图片尚未就绪');
+					return;
+				}
+				blob = await downloadGenerationTaskImages(localStorage.token, task.task_id);
+				filename = `${task.task_id}_images.zip`;
+			} else {
+				if (!task.download_ready) {
+					toast.error('任务归档尚未完成');
+					return;
+				}
+				blob = await downloadGenerationTask(localStorage.token, task.task_id);
+				filename = `${task.task_id}.mp4`;
+			}
+
 			const objectUrl = URL.createObjectURL(blob);
 			const a = document.createElement('a');
 			a.href = objectUrl;
-			a.download = `${task.task_id}.mp4`;
+			a.download = filename;
 			document.body.appendChild(a);
 			a.click();
 			document.body.removeChild(a);
@@ -479,8 +501,15 @@
 	$: selectedTaskParamEntries = selectedTask ? getGenerationParamEntries(selectedTask) : [];
 	$: selectedTaskIsFailed = selectedTask ? isFailedTask(selectedTask) : false;
 	$: selectedTaskFailureReason = selectedTask ? getFailureReason(selectedTask) : '';
-	$: selectedTaskPreviewImageUrl = selectedTask ? getTaskPreviewImageUrl(selectedTask) : '';
 	$: selectedTaskImageUrls = selectedTask ? getTaskImageUrls(selectedTask) : [];
+	$: if (selectedTaskImageUrls.length === 0) {
+		selectedTaskImageIndex = 0;
+	} else if (selectedTaskImageIndex >= selectedTaskImageUrls.length || selectedTaskImageIndex < 0) {
+		selectedTaskImageIndex = 0;
+	}
+	$: selectedTaskPreviewImageUrl = selectedTask
+		? selectedTaskImageUrls[selectedTaskImageIndex] || getTaskPreviewImageUrl(selectedTask)
+		: '';
 	$: if (initialized) {
 		selectedUserId;
 		selectedGroupId;
@@ -665,16 +694,16 @@
 								</div>
 							{/if}
 
-							<div class="task-overlay-top">
-								<button
-									type="button"
-									class="task-icon-btn"
-									disabled={!task.download_ready}
-									on:click|stopPropagation={() => {
-										handleDownload(task);
-									}}
-									aria-label="download"
-								>
+								<div class="task-overlay-top">
+									<button
+										type="button"
+										class="task-icon-btn"
+										disabled={!canTaskDownload(task)}
+										on:click|stopPropagation={() => {
+											handleDownload(task);
+										}}
+										aria-label="download"
+									>
 									<Download className="size-4" />
 								</button>
 							</div>
@@ -714,15 +743,15 @@
 			<div class="flex items-center justify-between gap-3 mb-3">
 				<div class="text-sm font-medium truncate">{selectedTask.task_id}</div>
 					<div class="flex items-center gap-2">
-						<button
-							type="button"
-							class="task-icon-btn modal-icon"
-							disabled={!selectedTask.download_ready}
-						on:click={() => {
-							handleDownload(selectedTask);
-						}}
-							aria-label="download"
-						>
+							<button
+								type="button"
+								class="task-icon-btn modal-icon"
+								disabled={!canTaskDownload(selectedTask)}
+							on:click={() => {
+								handleDownload(selectedTask);
+							}}
+								aria-label="download"
+							>
 							<Download className="size-4" />
 						</button>
 
@@ -765,25 +794,28 @@
 				{/if}
 			</div>
 
-			{#if selectedTaskImageUrls.length > 1}
-				<div class="mt-2 flex gap-2 overflow-x-auto pb-1">
-					{#each selectedTaskImageUrls as imageUrl (`preview-image-${selectedTask.task_id}-${imageUrl}`)}
-						<a
-							class="shrink-0 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700"
-							href={imageUrl}
-							target="_blank"
-							rel="noreferrer noopener"
-						>
-							<img
-								src={toAssetUrl(imageUrl)}
-								alt={`task-preview-thumb-${selectedTask.task_id}`}
-								class="w-16 h-16 object-cover"
-								loading="lazy"
-							/>
-						</a>
-					{/each}
-				</div>
-			{/if}
+				{#if selectedTaskImageUrls.length > 1}
+					<div class="mt-2 flex gap-2 overflow-x-auto pb-1">
+						{#each selectedTaskImageUrls as imageUrl, idx (`preview-image-${selectedTask.task_id}-${imageUrl}`)}
+							<button
+								type="button"
+								class="task-preview-thumb-btn"
+								class:active={idx === selectedTaskImageIndex}
+								on:click={() => {
+									selectedTaskImageIndex = idx;
+								}}
+								aria-label={`preview-thumb-${idx + 1}`}
+							>
+								<img
+									src={toAssetUrl(imageUrl)}
+									alt={`task-preview-thumb-${selectedTask.task_id}`}
+									class="w-16 h-16 object-cover"
+									loading="lazy"
+								/>
+							</button>
+						{/each}
+					</div>
+				{/if}
 
 				<div class="task-detail-section">
 					<div class="task-detail-title">提示词</div>
@@ -998,6 +1030,27 @@
 
 	.task-icon-btn.modal-icon.danger {
 		color: #ef4444;
+	}
+
+	.task-preview-thumb-btn {
+		flex-shrink: 0;
+		border-radius: 0.5rem;
+		overflow: hidden;
+		border: 1px solid rgba(209, 213, 219, 0.9);
+		opacity: 0.72;
+	}
+
+	:global(.dark) .task-preview-thumb-btn {
+		border-color: rgba(75, 85, 99, 0.95);
+	}
+
+	.task-preview-thumb-btn.active {
+		opacity: 1;
+		border-color: rgb(37, 99, 235);
+	}
+
+	:global(.dark) .task-preview-thumb-btn.active {
+		border-color: rgb(96, 165, 250);
 	}
 
 	.task-meta {
