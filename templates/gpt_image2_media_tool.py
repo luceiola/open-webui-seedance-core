@@ -85,8 +85,8 @@ class Tools:
         TASK_POLL_INTERVAL_SECONDS: int = Field(default=3, ge=1, le=60)
         TASK_MAX_WAIT_SECONDS: int = Field(default=600, ge=10, le=7200)
         TASK_STORE_DIR: str = Field(
-            default=".data-dev/gpt_image2_tasks",
-            description="本地任务状态目录（用于任务查询/轮询）",
+            default="",
+            description="本地任务状态目录（留空时自动按 DATA_DIR/CACHE_DIR 推导）",
         )
 
     def __init__(self) -> None:
@@ -467,9 +467,35 @@ class Tools:
         return None, "output_compression must be an integer between 0 and 100"
 
     def _task_store_root(self) -> Path:
-        root = Path(self.valves.TASK_STORE_DIR)
+        configured = str(self.valves.TASK_STORE_DIR or "").strip()
+        if configured:
+            root = Path(configured).expanduser()
+        else:
+            data_dir = str(os.getenv("DATA_DIR") or "").strip()
+            if data_dir:
+                root = Path(data_dir).expanduser() / "gpt_image2_tasks"
+            else:
+                try:
+                    from open_webui.config import CACHE_DIR as OPENWEBUI_CACHE_DIR
+
+                    root = Path(OPENWEBUI_CACHE_DIR).expanduser().parent / "gpt_image2_tasks"
+                except Exception:
+                    cwd = Path.cwd().resolve()
+                    candidates = [
+                        cwd / ".data-prod" / "gpt_image2_tasks",
+                        cwd / ".data-dev" / "gpt_image2_tasks",
+                        cwd / ".data" / "gpt_image2_tasks",
+                        cwd / "backend" / "open_webui" / "data" / "gpt_image2_tasks",
+                    ]
+                    root = candidates[0]
+                    for candidate in candidates:
+                        if candidate.parent.exists():
+                            root = candidate
+                            break
         if not root.is_absolute():
-            root = Path.cwd() / root
+            root = (Path.cwd() / root).resolve()
+        else:
+            root = root.resolve()
         root.mkdir(parents=True, exist_ok=True)
         return root
 

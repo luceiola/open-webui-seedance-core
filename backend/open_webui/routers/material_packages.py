@@ -1181,8 +1181,19 @@ async def _query_generation_task_from_happyhorse(task_id: str, timeout_seconds: 
 
 
 def _query_generation_task_from_gpt_image2_local(user_id: str, task_id: str) -> dict[str, Any]:
-    raw_store_dir = os.getenv('GPT_IMAGE2_TASK_STORE_DIR') or '.data-dev/gpt_image2_tasks'
-    store_dir = Path(raw_store_dir).expanduser()
+    raw_store_dir = str(os.getenv('GPT_IMAGE2_TASK_STORE_DIR') or '').strip()
+    if raw_store_dir:
+        store_dir = Path(raw_store_dir).expanduser()
+    else:
+        data_dir = str(os.getenv('DATA_DIR') or '').strip()
+        if data_dir:
+            store_dir = Path(data_dir).expanduser() / 'gpt_image2_tasks'
+        else:
+            store_dir = CACHE_DIR.parent / 'gpt_image2_tasks'
+    if not store_dir.is_absolute():
+        store_dir = (Path.cwd() / store_dir).resolve()
+    else:
+        store_dir = store_dir.resolve()
     safe_task_id = _sanitize_task_id(task_id)
     task_file = store_dir / str(user_id) / f'{safe_task_id}.json'
     if not task_file.exists() or not task_file.is_file():

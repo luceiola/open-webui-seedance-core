@@ -347,17 +347,41 @@ class Tools:
         if configured_root:
             root = Path(configured_root).expanduser().resolve() / uid / "btn_image2"
         else:
-            cwd = Path.cwd().resolve()
-            candidates = [
-                cwd / ".data-dev" / "cache" / "material_packages" / uid / "task_vendor_artifacts" / "btn_image2",
-                cwd / ".data" / "cache" / "material_packages" / uid / "task_vendor_artifacts" / "btn_image2",
-                cwd / "backend" / "open_webui" / "data" / "cache" / "material_packages" / uid / "task_vendor_artifacts" / "btn_image2",
-            ]
-            root = candidates[0]
-            for candidate in candidates:
-                if candidate.parent.exists():
-                    root = candidate
-                    break
+            root: Optional[Path] = None
+
+            data_dir = str(os.getenv("DATA_DIR") or "").strip()
+            if data_dir:
+                root = (
+                    Path(data_dir).expanduser().resolve()
+                    / "cache"
+                    / "material_packages"
+                    / uid
+                    / "task_vendor_artifacts"
+                    / "btn_image2"
+                )
+
+            if root is None:
+                try:
+                    from open_webui.config import CACHE_DIR as OPENWEBUI_CACHE_DIR
+
+                    cache_dir = Path(OPENWEBUI_CACHE_DIR).expanduser().resolve()
+                    root = cache_dir / "material_packages" / uid / "task_vendor_artifacts" / "btn_image2"
+                except Exception:
+                    root = None
+
+            if root is None:
+                cwd = Path.cwd().resolve()
+                candidates = [
+                    cwd / ".data-prod" / "cache" / "material_packages" / uid / "task_vendor_artifacts" / "btn_image2",
+                    cwd / ".data-dev" / "cache" / "material_packages" / uid / "task_vendor_artifacts" / "btn_image2",
+                    cwd / ".data" / "cache" / "material_packages" / uid / "task_vendor_artifacts" / "btn_image2",
+                    cwd / "backend" / "open_webui" / "data" / "cache" / "material_packages" / uid / "task_vendor_artifacts" / "btn_image2",
+                ]
+                root = candidates[0]
+                for candidate in candidates:
+                    if candidate.parent.exists():
+                        root = candidate
+                        break
 
         task_dir = root / task_id
         image_dir = task_dir / "images"
