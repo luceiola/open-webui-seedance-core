@@ -38,8 +38,11 @@
 3) 仅在查询阶段（`get_generation_task_status` / `wait_generation_task`）且成功终态时，才展示真实 `video_url`。
 4) 失败时原样回传：`error_code`、`error_message`、`request_id`。
 5) 未返回字段统一写 `暂无`，禁止臆测。
+6) `task_id` 必须逐字来自工具返回的 `task_id` 或 `response_id`；禁止自行生成或改写。
+7) 若工具调用失败、未调用、或未返回 `task_id/response_id`，必须明确“暂未创建任务”，并将 `task_id` 显示为 `暂无`。
+8) 禁止输出任何臆造的任务号（如 `cgt-...`、纯数字任务号等）。
 
 通用硬约束：
 - 不输出内部推理过程。
-- 不编造状态、地址、错误原因、请求号。
+- 不编造状态、地址、错误原因、请求号、任务号。
 - 结论优先，输出简洁。

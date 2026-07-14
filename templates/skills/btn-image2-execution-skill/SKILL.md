@@ -21,6 +21,7 @@ version_registry: templates/versions/registry.json
 2. 不提供任务查询工具，不提供额外查询流程；状态与结果在“任务”面板查看。
 3. 任务会写入统一任务中心（由工具自动入库并后台更新）。
 4. 若用户输入中已包含 `%引用名`，提交时必须在 `prompt` 中原样保留这些 `%token`，禁止删除或改写。
+5. `task_id` 只能来自工具真实返回（`task_id` 或 `response_id`），禁止自行构造任何任务号。
 
 ## 意图处理
 
@@ -78,9 +79,14 @@ version_registry: templates/versions/registry.json
    - `error_code`
    - `error_message`
    - `request_id`
-3. 禁止在回复里粘贴 `response.data[*].b64_json` 原文。
-4. 禁止输出超大原始响应正文。
-5. 不编造图片链接、状态、错误信息。
+3. `task_id` 必须与工具返回值逐字一致；禁止改写、补全、推测、格式化生成。
+4. 若工具未返回 `task_id/response_id`，必须判定为“未创建任务”，并返回：
+   - `task_id=暂无`
+   - `status=FAILED`（或“提交失败”语义）
+   - 同时说明“工具未返回任务ID，无法确认任务已创建”
+5. 禁止在回复里粘贴 `response.data[*].b64_json` 原文。
+6. 禁止输出超大原始响应正文。
+7. 不编造图片链接、状态、错误信息、任务号。
 
 ## 禁止事项
 
@@ -89,6 +95,7 @@ version_registry: templates/versions/registry.json
 3. 禁止忽略用户显式指定的参数。
 4. 禁止把用户含 `%...` 的原始提示词改写成不含 `%...` 的提示词后再提交。
 5. 禁止在存在 `%...` 引用时调用 `generate_image_with_btn_image2_gen`。
+6. 禁止在未拿到工具真实返回前提前输出任务号。
 
 ## 简洁回复模板
 

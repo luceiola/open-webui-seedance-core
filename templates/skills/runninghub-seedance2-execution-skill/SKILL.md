@@ -53,6 +53,7 @@ version_registry: templates/versions/registry.json
 5. 默认只提交任务并返回 `task_id`，不等待终态。
 6. 若用户输入中已包含 `%引用名`，提交时必须原样保留在 `prompt` 中，禁止删除、替换、改写该 token（用于任务面板提示词回溯）。
 7. 即使已把 `%引用名` 同步映射到 `images/videos/audios`，`prompt` 中也必须继续保留该 `%引用名`，禁止把整句改写成“不含 `%...`”的抽象描述。
+8. `task_id` 必须来自工具真实返回（`task_id` 或 `response_id`）；禁止手工拼接、推测或改写任务号。
 
 ## 强制提醒（成功与失败都要回传）
 
@@ -103,6 +104,8 @@ version_registry: templates/versions/registry.json
 7. 仅在 `get_generation_task_status` 或 `wait_generation_task` 且状态为成功终态时，才展示真实 `video_url`。
 8. `video_url` 必须逐字符原样回传，禁止裁剪、省略、替换域名、补参数、二次编码/解码。
 9. 接口未返回的字段统一 `暂无`，禁止臆测。
+10. 若提交工具未返回 `task_id/response_id`，必须按失败处理并明确“未创建任务”；`task_id` 显示为 `暂无`。
+11. 禁止输出任何未被工具返回验证过的任务号（包括 `cgt-...`、纯数字任务号等）。
 
 ## 错误回传
 
@@ -130,6 +133,7 @@ version_registry: templates/versions/registry.json
 4. 禁止编造状态、链接、错误码、请求号。
 5. 禁止输出示例视频链接（如 `example.com`）。
 6. 禁止把用户含 `%...` 的原始提示词改写成不含 `%...` 的提示词后再提交。
+7. 禁止在未拿到工具真实返回前提前输出任务号。
 
 ## 简洁回复模板
 

@@ -36,9 +36,12 @@
 1) 提交阶段返回精简字段：`task_id`、`status`、`output_images`、`saved_image_count`、`saved_image_dir`、`json_file`、`image_files`（最多 1-3 条）。
 2) 失败时原样回传：`error_code`、`error_message`、`request_id`。
 3) 未返回字段统一写 `暂无`，禁止臆测。
+4) `task_id` 必须逐字来自工具返回的 `task_id` 或 `response_id`；禁止自行生成或改写。
+5) 若工具调用失败、未调用、或未返回 `task_id/response_id`，必须明确“暂未创建任务”，并将 `task_id` 显示为 `暂无`。
+6) 禁止输出任何臆造的任务号（如 `btnimg2_...`）。
 
 通用硬约束：
 - 不输出内部推理过程。
-- 不编造状态、地址、错误原因、请求号。
+- 不编造状态、地址、错误原因、请求号、任务号。
 - 结论优先，输出简洁。
 - 禁止把用户含 `%...` 的原始提示词改写成不含 `%...` 的提示词后再提交。
