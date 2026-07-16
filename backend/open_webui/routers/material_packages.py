@@ -1341,19 +1341,35 @@ def _extract_error_info(payload: Any) -> dict[str, Optional[str]]:
             'request_id': None,
         }
 
-    request_id: Optional[str] = payload.get('request_id')
+    request_id: Optional[str] = payload.get('request_id') or payload.get('requestId')
     error_code: Optional[str] = None
     error_message: Optional[str] = None
 
     for candidate in (
+        payload,
         payload.get('error'),
         (payload.get('data') or {}).get('error') if isinstance(payload.get('data'), dict) else None,
         payload.get('output') if isinstance(payload.get('output'), dict) else None,
+        payload.get('final') if isinstance(payload.get('final'), dict) else None,
     ):
         if isinstance(candidate, dict):
-            error_code = error_code or candidate.get('code')
-            error_message = error_message or candidate.get('message')
-            request_id = request_id or candidate.get('request_id')
+            error_code = (
+                error_code
+                or candidate.get('error_code')
+                or candidate.get('errorCode')
+                or candidate.get('code')
+            )
+            error_message = (
+                error_message
+                or candidate.get('error_message')
+                or candidate.get('errorMessage')
+                or candidate.get('failed_reason')
+                or candidate.get('failedReason')
+                or candidate.get('message')
+            )
+            request_id = (
+                request_id or candidate.get('request_id') or candidate.get('requestId')
+            )
         elif isinstance(candidate, str):
             error_message = error_message or candidate
 

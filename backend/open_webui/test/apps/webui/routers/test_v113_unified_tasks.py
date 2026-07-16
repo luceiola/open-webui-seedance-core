@@ -280,6 +280,32 @@ def material_packages_router_module(tmp_path):
     return _build_material_packages_router_fixture(tmp_path)
 
 
+def test_extract_error_info_supports_runninghub_final_response(material_packages_router_module):
+    payload = {
+        'query': {'taskId': '2077650260884590594', 'status': 'RUNNING'},
+        'final': {
+            'taskId': '2077650260884590594',
+            'status': 'FAILED',
+            'errorCode': '1501',
+            'errorMessage': (
+                'The request failed because the output audio may contain sensitive information | '
+                '请求失败，输出视频的音频中可能包含敏感内容或涉及版权信息'
+            ),
+        },
+    }
+
+    error_info = material_packages_router_module._extract_error_info(payload)
+
+    assert error_info == {
+        'error_code': '1501',
+        'error_message': (
+            'The request failed because the output audio may contain sensitive information | '
+            '请求失败，输出视频的音频中可能包含敏感内容或涉及版权信息'
+        ),
+        'request_id': None,
+    }
+
+
 def _run(coro):
     return asyncio.run(coro)
 
