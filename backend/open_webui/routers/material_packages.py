@@ -38,6 +38,10 @@ router = APIRouter()
 MATERIAL_PACKAGES_DIR = CACHE_DIR / 'material_packages'
 MATERIAL_PACKAGES_DIR.mkdir(parents=True, exist_ok=True)
 
+# Task metadata and source material packages remain local. Generated artifacts
+# may use a separately mounted volume configured by TASK_ARTIFACTS_ROOT.
+TASK_ARTIFACTS_ROOT_ENV = 'TASK_ARTIFACTS_ROOT'
+
 ARK_ENV_FILE_CANDIDATES: list[Path] = [
     Path(os.getenv('ARK_ENV_FILE', '')).expanduser().resolve() if os.getenv('ARK_ENV_FILE') else None,
     Path.cwd() / 'config' / 'happyhorse.env',
@@ -695,14 +699,54 @@ def _user_root_dir(user_id: str) -> Path:
     return path
 
 
+def _task_artifacts_root_dir() -> Path:
+    configured = str(os.getenv(TASK_ARTIFACTS_ROOT_ENV) or '').strip()
+    if not configured:
+        return MATERIAL_PACKAGES_DIR
+
+    try:
+        root = Path(configured).expanduser().resolve()
+    except OSError as e:
+        raise HTTPException(status_code=503, detail='ArtifactStorageUnavailable') from e
+
+    if not root.is_dir() or not os.access(root, os.R_OK | os.W_OK | os.X_OK):
+        raise HTTPException(status_code=503, detail='ArtifactStorageUnavailable')
+    return root
+
+
+def _task_artifact_user_root_dir(user_id: str, *, ensure_exists: bool = True) -> Path:
+    root = _task_artifacts_root_dir()
+    path = root / str(user_id)
+    if ensure_exists:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            raise HTTPException(status_code=503, detail='ArtifactStorageUnavailable') from e
+    return path
+
+
+def _require_task_artifact_storage() -> None:
+    root = _task_artifacts_root_dir()
+    probe_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix='.open-webui-artifact-', dir=root, delete=False) as probe:
+            probe_path = Path(probe.name)
+            probe.write(b'probe')
+        probe_path.unlink()
+    except OSError as e:
+        if probe_path is not None:
+            probe_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=503, detail='ArtifactStorageUnavailable') from e
+
+
 def _task_archives_dir(user_id: str) -> Path:
-    path = _user_root_dir(user_id) / 'task_archives'
+    path = _task_artifact_user_root_dir(user_id) / 'task_archives'
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def _task_thumbnails_dir(user_id: str) -> Path:
-    path = _user_root_dir(user_id) / 'task_thumbnails'
+    path = _task_artifact_user_root_dir(user_id) / 'task_thumbnails'
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -722,7 +766,7 @@ def _safe_resolve_under(base_dir: Path, relative_path: str) -> Optional[Path]:
 def _task_file_from_relative(user_id: str, relative_path: Optional[str]) -> Optional[Path]:
     if not relative_path:
         return None
-    base_dir = _user_root_dir(user_id)
+    base_dir = _task_artifact_user_root_dir(user_id, ensure_exists=False)
     target = _safe_resolve_under(base_dir, str(relative_path))
     if not target or not target.is_file():
         return None
@@ -1506,7 +1550,7 @@ async def _archive_task_record_if_needed(
 
     ext = _guess_video_extension(video_url)
     video_relpath = _archive_video_relpath(task_id, ext)
-    video_path = _safe_resolve_under(_user_root_dir(owner_user_id), video_relpath)
+    video_path = _safe_resolve_under(_task_artifact_user_root_dir(owner_user_id), video_relpath)
     if not video_path:
         task_record['archive_status'] = ARCHIVE_STATUS_FAILED
         task_record['archive_error'] = 'Invalid archive path'
@@ -1530,7 +1574,7 @@ async def _archive_task_record_if_needed(
     task_record['archive_updated_at'] = int(time.time())
 
     thumb_relpath = _archive_thumb_relpath(task_id)
-    thumb_path = _safe_resolve_under(_user_root_dir(owner_user_id), thumb_relpath)
+    thumb_path = _safe_resolve_under(_task_artifact_user_root_dir(owner_user_id), thumb_relpath)
     if thumb_path and _generate_video_thumbnail(video_path, thumb_path):
         task_record['thumbnail_path'] = thumb_relpath
 
@@ -3062,6 +3106,7 @@ async def generate_with_material_package(
     form_data: GenerateWithPackageRequest,
     user: UserModel = Depends(get_verified_user),
 ):
+    _require_task_artifact_storage()
     manifest = _load_manifest(_manifest_path(user.id, package_id))
     assets_raw = [item for item in manifest.get('assets', [])]
     assets = [MaterialAsset(**item) for item in assets_raw]

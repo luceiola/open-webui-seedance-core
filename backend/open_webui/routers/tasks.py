@@ -308,7 +308,9 @@ def _resolve_local_task_image_paths(owner_user_id: str, item: dict[str, Any]) ->
     except Exception:
         return []
 
-    user_root_builder = getattr(material_packages_router, '_user_root_dir', None)
+    user_root_builder = getattr(material_packages_router, '_task_artifact_user_root_dir', None)
+    if not callable(user_root_builder):
+        user_root_builder = getattr(material_packages_router, '_user_root_dir', None)
     if callable(user_root_builder):
         try:
             user_root = Path(user_root_builder(str(owner_user_id))).resolve()

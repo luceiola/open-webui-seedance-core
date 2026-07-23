@@ -351,8 +351,17 @@ class Tools:
         else:
             root: Optional[Path] = None
 
+            artifact_root = str(os.getenv("TASK_ARTIFACTS_ROOT") or "").strip()
+            if artifact_root:
+                root = (
+                    Path(artifact_root).expanduser().resolve()
+                    / uid
+                    / "task_vendor_artifacts"
+                    / "btn_image2"
+                )
+
             data_dir = str(os.getenv("DATA_DIR") or "").strip()
-            if data_dir:
+            if root is None and data_dir:
                 root = (
                     Path(data_dir).expanduser().resolve()
                     / "cache"

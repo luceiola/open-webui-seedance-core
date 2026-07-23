@@ -35,6 +35,24 @@ if [[ -n "${DATA_DIR}" ]]; then
   echo "[INFO] DATA_DIR=${DATA_DIR}"
 fi
 
+if [[ -n "${TASK_ARTIFACTS_ROOT:-}" ]]; then
+  if [[ ! -d "${TASK_ARTIFACTS_ROOT}" ]]; then
+    echo "[ERROR] TASK_ARTIFACTS_ROOT does not exist: ${TASK_ARTIFACTS_ROOT}"
+    exit 2
+  fi
+  if [[ ! -r "${TASK_ARTIFACTS_ROOT}" || ! -w "${TASK_ARTIFACTS_ROOT}" || ! -x "${TASK_ARTIFACTS_ROOT}" ]]; then
+    echo "[ERROR] TASK_ARTIFACTS_ROOT is not readable and writable: ${TASK_ARTIFACTS_ROOT}"
+    exit 2
+  fi
+  TASK_ARTIFACTS_PROBE="${TASK_ARTIFACTS_ROOT}/.open-webui-artifact-probe-$$"
+  if ! (umask 077 && : > "${TASK_ARTIFACTS_PROBE}" && rm -f "${TASK_ARTIFACTS_PROBE}"); then
+    rm -f "${TASK_ARTIFACTS_PROBE}" 2>/dev/null || true
+    echo "[ERROR] TASK_ARTIFACTS_ROOT write probe failed: ${TASK_ARTIFACTS_ROOT}"
+    exit 2
+  fi
+  echo "[INFO] task artifacts=${TASK_ARTIFACTS_ROOT}"
+fi
+
 if [[ "${MATERIAL_PACK_TOS_ENABLED:-false}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
   if ! python -c "import tos" >/dev/null 2>&1; then
     echo "[ERROR] MATERIAL_PACK_TOS_ENABLED=true but python package 'tos' is missing."
