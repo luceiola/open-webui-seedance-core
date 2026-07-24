@@ -1,0 +1,11 @@
+› /Users/lucas/Documents/open-webui-seedance-core 开发仓库, 完成后提交仓库
+
+  /Users/lucas/srv/open-webui-seedance-prod 拉取仓库更改
+
+  这个是开发过程
+
+  /Users/lucas/Documents/open-webui-seedance-core/templates 是我们主要开发的内容
+
+  一个 agent 有三件套, system_prompt, skill, tools
+
+  先了解一下上述内容
