@@ -28,6 +28,7 @@ from open_webui.config import CACHE_DIR
 from open_webui.models.files import Files
 from open_webui.models.groups import Groups
 from open_webui.models.users import UserModel, Users
+from open_webui.routers.task_catalog import TaskCatalog
 from open_webui.storage.provider import Storage
 from open_webui.utils.auth import get_verified_user
 
@@ -37,6 +38,7 @@ router = APIRouter()
 
 MATERIAL_PACKAGES_DIR = CACHE_DIR / 'material_packages'
 MATERIAL_PACKAGES_DIR.mkdir(parents=True, exist_ok=True)
+TASK_CATALOG = TaskCatalog(CACHE_DIR / 'task_catalog.sqlite3')
 
 # Task metadata and source material packages remain local. Generated artifacts
 # may use a separately mounted volume configured by TASK_ARTIFACTS_ROOT.
@@ -620,6 +622,25 @@ def _find_user_task_record_by_provider_task_id(
 def _save_task_record(user_id: str, task_id: str, data: dict[str, Any]) -> None:
     path = _task_record_path(user_id, task_id)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+    try:
+        TASK_CATALOG.upsert(str(user_id), str(task_id), data)
+    except Exception:
+        log.exception('Failed to update task catalog for %s/%s', user_id, task_id)
+
+
+def rebuild_task_catalog() -> int:
+    records: list[tuple[str, str, dict[str, Any]]] = []
+    for owner_user_id, path in _iter_task_record_paths():
+        data = _load_task_record_from_path(path)
+        if data is not None:
+            records.append((owner_user_id, str(data.get('task_id') or path.stem), data))
+    TASK_CATALOG.rebuild(records)
+    return len(records)
+
+
+def ensure_task_catalog() -> None:
+    if TASK_CATALOG.count() == 0 and _iter_task_record_paths():
+        rebuild_task_catalog()
 
 
 def _extract_task_status(data: dict[str, Any]) -> Optional[str]:
@@ -833,6 +854,18 @@ def _iter_task_record_paths() -> list[tuple[str, Path]]:
 
 def _find_task_record_owner(task_id: str) -> Optional[tuple[str, dict[str, Any], Path]]:
     safe_task_id = _sanitize_task_id(task_id)
+    # The catalog is local even when generated media is on SMB.  Prefer it for
+    # point reads so opening a task does not need a full task-record scan.
+    try:
+        catalog_row = TASK_CATALOG.find(safe_task_id, include_deleted=True)
+    except Exception:
+        catalog_row = None
+    if catalog_row is not None:
+        owner_user_id, data = catalog_row
+        path = _task_record_path(owner_user_id, safe_task_id)
+        if path.is_file():
+            return owner_user_id, data, path
+
     for owner_user_id, path in _iter_task_record_paths():
         if path.stem != safe_task_id:
             continue

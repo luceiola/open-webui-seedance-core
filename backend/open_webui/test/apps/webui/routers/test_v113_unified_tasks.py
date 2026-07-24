@@ -155,6 +155,52 @@ def _build_tasks_router_fixture():
     material_module._task_file_from_relative = lambda owner_user_id, relative_path: None
     material_module._generation_skill_from_model = lambda model: 'unknown'
 
+    class _TaskCatalog:
+        @staticmethod
+        def _rows():
+            rows = []
+            for owner_user_id, path in material_module._iter_task_record_paths():
+                item = material_module._load_task_record_from_path(path)
+                if item is not None:
+                    rows.append((str(owner_user_id), item))
+            return rows
+
+        def owners(self, *, include_deleted=False):
+            return sorted({owner_user_id for owner_user_id, item in self._rows() if include_deleted or not material_module._is_soft_deleted(item)})
+
+        def query(self, *, user_id=None, owner_ids=None, provider=None, skill_name=None, tool_name=None, status=None, model=None,
+                  start_at=None, end_at=None, include_deleted=False, offset=0, limit=48):
+            aliases = {'SUBMITTED': 'PENDING', 'QUEUED': 'PENDING', 'IN_PROGRESS': 'RUNNING', 'SUCCESS': 'SUCCEEDED', 'COMPLETED': 'SUCCEEDED', 'ERROR': 'FAILED'}
+            rows = []
+            for owner_user_id, item in self._rows():
+                if user_id and owner_user_id != user_id:
+                    continue
+                if owner_ids is not None and owner_user_id not in owner_ids:
+                    continue
+                if not include_deleted and material_module._is_soft_deleted(item):
+                    continue
+                if provider and str(item.get('provider') or 'ark').lower() != provider:
+                    continue
+                if skill_name and str(item.get('skill_name') or 'seedance').lower() != skill_name:
+                    continue
+                if tool_name and str(item.get('tool_name') or 'material_packages.generate').lower() != tool_name:
+                    continue
+                if model and str(item.get('model') or '').lower() != model:
+                    continue
+                if status and aliases.get(str(item.get('status') or '').upper(), str(item.get('status') or '').upper()) != status:
+                    continue
+                created_at = int(item.get('created_at') or 0)
+                if start_at is not None and created_at < start_at:
+                    continue
+                if end_at is not None and created_at > end_at:
+                    continue
+                rows.append((owner_user_id, item))
+            rows.sort(key=lambda row: (int(row[1].get('created_at') or 0), str(row[1].get('task_id') or '')), reverse=True)
+            return rows[offset : offset + limit], len(rows)
+
+    material_module.TASK_CATALOG = _TaskCatalog()
+    material_module.ensure_task_catalog = lambda: None
+
     pipelines_module = types.ModuleType('open_webui.routers.pipelines')
 
     async def _process_pipeline_inlet_filter(request, payload, user, models):
@@ -202,6 +248,28 @@ def _build_material_packages_router_fixture(tmp_path: Path):
     storage_pkg.__path__ = []
     utils_pkg = types.ModuleType('open_webui.utils')
     utils_pkg.__path__ = []
+    routers_pkg = types.ModuleType('open_webui.routers')
+    routers_pkg.__path__ = []
+
+    task_catalog_module = types.ModuleType('open_webui.routers.task_catalog')
+
+    class _TaskCatalog:
+        def __init__(self, path):
+            self.path = path
+
+        def upsert(self, *args, **kwargs):
+            return None
+
+        def count(self):
+            return 0
+
+        def rebuild(self, *args, **kwargs):
+            return None
+
+        def find(self, *args, **kwargs):
+            return None
+
+    task_catalog_module.TaskCatalog = _TaskCatalog
 
     config_module = types.ModuleType('open_webui.config')
     config_module.CACHE_DIR = Path(mkdtemp(prefix='owui-cache-', dir=str(tmp_path)))
@@ -251,6 +319,8 @@ def _build_material_packages_router_fixture(tmp_path: Path):
         'open_webui.models': models_pkg,
         'open_webui.storage': storage_pkg,
         'open_webui.utils': utils_pkg,
+        'open_webui.routers': routers_pkg,
+        'open_webui.routers.task_catalog': task_catalog_module,
         'open_webui.config': config_module,
         'open_webui.models.files': files_module,
         'open_webui.models.groups': groups_module,
@@ -676,7 +746,7 @@ def test_unified_task_preview_returns_image_fields(tasks_router_module):
     assert response.thumbnail_url == 'https://example.com/preview.png'
 
 
-def test_unified_tasks_list_falls_back_to_local_image_proxy_urls(tasks_router_module, tmp_path):
+def test_unified_tasks_list_skips_local_image_proxy_resolution(tasks_router_module, tmp_path):
     tasks_module, material_stub = tasks_router_module
     owner_user_id = 'user-1'
     task_id = 'task-image-local'
@@ -738,15 +808,12 @@ def test_unified_tasks_list_falls_back_to_local_image_proxy_urls(tasks_router_mo
 
     assert response.total == 1
     assert response.items[0].id == task_id
-    assert response.items[0].image_urls == [
-        f'/api/v1/tasks/{task_id}/images/0',
-        f'/api/v1/tasks/{task_id}/images/1',
-    ]
-    assert response.items[0].primary_image_url == f'/api/v1/tasks/{task_id}/images/0'
-    assert response.items[0].thumbnail_url == f'/api/v1/tasks/{task_id}/images/0'
+    assert response.items[0].image_urls == []
+    assert response.items[0].primary_image_url is None
+    assert response.items[0].thumbnail_url is None
 
 
-def test_unified_tasks_list_merges_image_files_with_directory_scan(tasks_router_module, tmp_path):
+def test_unified_tasks_list_skips_image_directory_scan(tasks_router_module, tmp_path):
     tasks_module, material_stub = tasks_router_module
     owner_user_id = 'user-1'
     task_id = 'task-image-local-merge'
@@ -810,14 +877,9 @@ def test_unified_tasks_list_merges_image_files_with_directory_scan(tasks_router_
 
     assert response.total == 1
     assert response.items[0].id == task_id
-    assert response.items[0].image_urls == [
-        f'/api/v1/tasks/{task_id}/images/0',
-        f'/api/v1/tasks/{task_id}/images/1',
-        f'/api/v1/tasks/{task_id}/images/2',
-        f'/api/v1/tasks/{task_id}/images/3',
-    ]
-    assert response.items[0].primary_image_url == f'/api/v1/tasks/{task_id}/images/0'
-    assert response.items[0].thumbnail_url == f'/api/v1/tasks/{task_id}/images/0'
+    assert response.items[0].image_urls == []
+    assert response.items[0].primary_image_url is None
+    assert response.items[0].thumbnail_url is None
 
 
 def test_unified_task_image_route_streams_local_image(tasks_router_module, tmp_path):

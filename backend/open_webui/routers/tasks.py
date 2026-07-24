@@ -460,6 +460,7 @@ def _to_unified_task_item(
     owner_user_name: str,
     item: dict[str, Any],
     requester: UserModel,
+    resolve_local_images: bool = True,
 ) -> UnifiedTaskItem:
     task_id = str(item.get('task_id') or '').strip()
     provider = str(item.get('provider') or 'ark').strip().lower() or 'ark'
@@ -559,7 +560,7 @@ def _to_unified_task_item(
     if artifact_kind_value is None:
         artifact_kind_value = 'image' if primary_image_url_value or image_urls_value else 'video'
 
-    if artifact_kind_value == 'image' and not image_urls_value:
+    if artifact_kind_value == 'image' and not image_urls_value and resolve_local_images:
         image_urls_value = _build_local_task_image_proxy_urls(task_id, owner_user_id, item)
         if image_urls_value and not primary_image_url_value:
             primary_image_url_value = image_urls_value[0]
@@ -1446,19 +1447,14 @@ async def list_unified_tasks(
             },
         )
 
+    material_packages_router.ensure_task_catalog()
     user_name_cache: dict[str, str] = {}
     rows: list[UnifiedTaskItem] = []
-    task_paths = material_packages_router._iter_task_record_paths()
     owner_group_ids: dict[str, set[str]] = {}
+    catalog_owner_ids: Optional[set[str]] = None
 
     if desired_group_id:
-        candidate_owner_ids = sorted(
-            {
-                str(owner_user_id)
-                for owner_user_id, _ in task_paths
-                if not desired_user or str(owner_user_id) == desired_user
-            }
-        )
+        candidate_owner_ids = [owner_id for owner_id in material_packages_router.TASK_CATALOG.owners() if not desired_user or owner_id == desired_user]
         if candidate_owner_ids:
             try:
                 grouped_rows = await Groups.get_groups_by_member_ids(candidate_owner_ids)
@@ -1484,18 +1480,34 @@ async def list_unified_tasks(
                         for group in owner_groups
                         if str(getattr(group, 'id', '') or '').strip()
                     }
+        catalog_owner_ids = {
+            owner_user_id
+            for owner_user_id, group_ids in owner_group_ids.items()
+            if desired_group_id in group_ids
+        }
 
-    for owner_user_id, path in task_paths:
-        if desired_user and str(owner_user_id) != desired_user:
-            continue
-        if desired_group_id and desired_group_id not in owner_group_ids.get(str(owner_user_id), set()):
+    catalog_status = desired_status if desired_status and desired_status != 'UNKNOWN' else None
+    catalog_rows, total = material_packages_router.TASK_CATALOG.query(
+        user_id=desired_user,
+        owner_ids=catalog_owner_ids,
+        provider=desired_provider,
+        skill_name=desired_skill_name,
+        tool_name=desired_tool_name,
+        status=catalog_status,
+        model=desired_model,
+        start_at=start_at_value,
+        end_at=end_at_value,
+        include_deleted=include_deleted,
+        offset=0 if desired_status == 'UNKNOWN' else offset,
+        limit=200000 if desired_status == 'UNKNOWN' else limit,
+    )
+
+    for owner_user_id, item in catalog_rows:
+        task_id = str(item.get('task_id') or '').strip()
+        if not task_id:
             continue
 
-        item = material_packages_router._load_task_record_from_path(path)
-        if item is None:
-            continue
-
-        changed = material_packages_router._normalize_task_defaults(item, owner_user_id=owner_user_id)
+        changed = False
         if refresh_status and material_packages_router._should_refresh_task_status(item, refresh_min_interval_seconds):
             item = await material_packages_router._refresh_task_record_from_ark(
                 owner_user_id,
@@ -1503,48 +1515,14 @@ async def list_unified_tasks(
                 timeout_seconds=120,
             )
             changed = True
-
-        item = await material_packages_router._archive_task_record_if_needed(owner_user_id, item)
-        if material_packages_router._normalize_task_defaults(item, owner_user_id=owner_user_id):
-            changed = True
-
-        task_id = str(item.get('task_id') or path.stem)
+            item = await material_packages_router._archive_task_record_if_needed(owner_user_id, item)
         if changed:
             material_packages_router._save_task_record(owner_user_id, task_id, item)
 
-        if not include_deleted and material_packages_router._is_soft_deleted(item):
-            continue
-
-        task_provider = str(item.get('provider') or 'ark').strip().lower()
-        if desired_provider and task_provider != desired_provider:
-            continue
-
-        task_skill_name = str(item.get('skill_name') or 'seedance').strip().lower()
-        if desired_skill_name and task_skill_name != desired_skill_name:
-            continue
-
-        task_tool_name = str(item.get('tool_name') or 'material_packages.generate').strip().lower()
-        if desired_tool_name and task_tool_name != desired_tool_name:
-            continue
-
-        task_model = str(item.get('model') or '').strip().lower()
-        if desired_model and task_model != desired_model:
-            continue
-
-        created_at_value = int(item.get('created_at') or 0)
-        if start_at_value is not None and created_at_value < start_at_value:
-            continue
-        if end_at_value is not None and created_at_value > end_at_value:
-            continue
-
-        status_value = _normalize_unified_status(item.get('status'))
-        if desired_status:
-            if desired_status == 'UNKNOWN':
-                raw_status = str(item.get('status') or '').strip().upper()
-                raw_alias = UNIFIED_TASK_STATUS_ALIASES.get(raw_status, raw_status)
-                if raw_alias in {'PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELED'}:
-                    continue
-            elif status_value != desired_status:
+        if desired_status == 'UNKNOWN':
+            raw_status = str(item.get('status') or '').strip().upper()
+            normalized_status = UNIFIED_TASK_STATUS_ALIASES.get(raw_status, raw_status)
+            if normalized_status in {'PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELED'}:
                 continue
 
         owner_user_name = str(item.get('user_name') or '').strip()
@@ -1559,12 +1537,15 @@ async def list_unified_tasks(
                 owner_user_name=owner_user_name,
                 item=item,
                 requester=user,
+                resolve_local_images=False,
             )
         )
 
-    rows.sort(key=lambda row: (row.created_at, row.id), reverse=True)
-    total = len(rows)
-    paged_rows = rows[offset : offset + limit]
+    if desired_status == 'UNKNOWN':
+        total = len(rows)
+        paged_rows = rows[offset : offset + limit]
+    else:
+        paged_rows = rows
     return UnifiedTaskListResponse(items=paged_rows, total=total, offset=offset, limit=limit)
 
 
@@ -1576,26 +1557,25 @@ async def list_unified_task_users(
     _ = user
     material_packages_router._cleanup_expired_soft_deleted_records()
 
+    material_packages_router.ensure_task_catalog()
     user_name_cache: dict[str, str] = {}
-    seen: set[str] = set()
     rows: list[UnifiedTaskUserItem] = []
 
-    for owner_user_id, path in material_packages_router._iter_task_record_paths():
-        if owner_user_id in seen:
+    for owner_user_id in material_packages_router.TASK_CATALOG.owners(include_deleted=include_deleted):
+        catalog_rows, _ = material_packages_router.TASK_CATALOG.query(
+            user_id=owner_user_id,
+            include_deleted=include_deleted,
+            limit=1,
+        )
+        if not catalog_rows:
             continue
-
-        item = material_packages_router._load_task_record_from_path(path)
-        if item is None:
-            continue
-        if not include_deleted and material_packages_router._is_soft_deleted(item):
-            continue
+        _, item = catalog_rows[0]
 
         owner_user_name = str(item.get('user_name') or '').strip()
         if not owner_user_name:
             owner_user_name = await material_packages_router._resolve_user_name(owner_user_id, user_name_cache)
 
         rows.append(UnifiedTaskUserItem(user_id=str(owner_user_id), user_name=owner_user_name))
-        seen.add(owner_user_id)
 
     rows.sort(key=lambda row: row.user_name.lower())
     return UnifiedTaskUsersResponse(users=rows)
@@ -1635,20 +1615,17 @@ async def list_unified_task_providers(
 ):
     _ = user
     material_packages_router._cleanup_expired_soft_deleted_records()
+    material_packages_router.ensure_task_catalog()
 
     desired_user = (user_id or '').strip() if user_id else None
     seen: set[str] = set()
 
-    for owner_user_id, path in material_packages_router._iter_task_record_paths():
-        if desired_user and str(owner_user_id) != desired_user:
-            continue
-
-        item = material_packages_router._load_task_record_from_path(path)
-        if item is None:
-            continue
-        if not include_deleted and material_packages_router._is_soft_deleted(item):
-            continue
-
+    catalog_rows, _ = material_packages_router.TASK_CATALOG.query(
+        user_id=desired_user,
+        include_deleted=include_deleted,
+        limit=200000,
+    )
+    for _, item in catalog_rows:
         provider_value = str(item.get('provider') or 'ark').strip().lower() or 'ark'
         seen.add(provider_value)
 
