@@ -308,18 +308,42 @@ def _resolve_local_task_image_paths(owner_user_id: str, item: dict[str, Any]) ->
     except Exception:
         return []
 
-    user_root_builder = getattr(material_packages_router, '_task_artifact_user_root_dir', None)
-    if not callable(user_root_builder):
-        user_root_builder = getattr(material_packages_router, '_user_root_dir', None)
-    if callable(user_root_builder):
+    def _build_user_root(builder: Any) -> Optional[Path]:
+        if not callable(builder):
+            return None
         try:
-            user_root = Path(user_root_builder(str(owner_user_id))).resolve()
-            image_output_dir.relative_to(user_root)
+            try:
+                return Path(builder(str(owner_user_id), ensure_exists=False)).resolve()
+            except TypeError:
+                return Path(builder(str(owner_user_id))).resolve()
         except Exception:
-            return []
+            return None
 
-    if not image_output_dir.exists() or not image_output_dir.is_dir():
+    # Image2 records retain their original local absolute output path after
+    # migration, while the actual files may have moved to TASK_ARTIFACTS_ROOT.
+    # Derive one verified relative path, then probe only the matching local and
+    # mounted directories instead of scanning either storage root.
+    local_user_root = _build_user_root(getattr(material_packages_router, '_user_root_dir', None))
+    artifact_user_root = _build_user_root(getattr(material_packages_router, '_task_artifact_user_root_dir', None))
+    candidate_roots = [root for root in (local_user_root, artifact_user_root) if root is not None]
+    relative_output_dir: Optional[Path] = None
+    for user_root in candidate_roots:
+        try:
+            relative_output_dir = image_output_dir.relative_to(user_root)
+            break
+        except ValueError:
+            continue
+    if relative_output_dir is None:
         return []
+
+    image_output_dirs: list[Path] = []
+    seen_dirs: set[str] = set()
+    for user_root in candidate_roots:
+        candidate = user_root / relative_output_dir
+        key = str(candidate)
+        if key not in seen_dirs:
+            seen_dirs.add(key)
+            image_output_dirs.append(candidate)
 
     def _append_candidate(path: Path, target: list[Path]) -> None:
         try:
@@ -334,19 +358,21 @@ def _resolve_local_task_image_paths(owner_user_id: str, item: dict[str, Any]) ->
             return
         target.append(resolved)
 
-    image_files = _parse_string_list(generation_params.get('image_files'))
     candidate_paths: list[Path] = []
-    for value in image_files:
-        filename = Path(str(value or '').strip()).name
-        if not filename:
+    image_files = _parse_string_list(generation_params.get('image_files'))
+    for image_output_dir in image_output_dirs:
+        if not image_output_dir.exists() or not image_output_dir.is_dir():
             continue
-        _append_candidate(image_output_dir / filename, candidate_paths)
+        for value in image_files:
+            filename = Path(str(value or '').strip()).name
+            if filename:
+                _append_candidate(image_output_dir / filename, candidate_paths)
 
-    try:
-        for child in sorted(image_output_dir.iterdir()):
-            _append_candidate(child, candidate_paths)
-    except Exception:
-        return []
+        try:
+            for child in sorted(image_output_dir.iterdir()):
+                _append_candidate(child, candidate_paths)
+        except Exception:
+            continue
 
     deduped: list[Path] = []
     seen: set[str] = set()

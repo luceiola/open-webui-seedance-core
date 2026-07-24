@@ -746,6 +746,50 @@ def test_unified_task_preview_returns_image_fields(tasks_router_module):
     assert response.thumbnail_url == 'https://example.com/preview.png'
 
 
+def test_unified_task_preview_uses_local_image_output_when_artifacts_are_mounted(tasks_router_module, tmp_path):
+    tasks_module, material_stub = tasks_router_module
+    owner_user_id = 'user-1'
+    task_id = 'task-image-local-mounted'
+    local_user_root = tmp_path / 'data' / 'cache' / 'material_packages' / owner_user_id
+    image_dir = local_user_root / 'task_vendor_artifacts' / 'btn_image2' / task_id / 'images'
+    mounted_image_dir = tmp_path / 'mounted-artifacts' / owner_user_id / image_dir.relative_to(local_user_root)
+    mounted_image_dir.mkdir(parents=True, exist_ok=True)
+    (mounted_image_dir / 'image_001.png').write_bytes(b'fake-image-1')
+    (mounted_image_dir / 'image_002.png').write_bytes(b'fake-image-2')
+
+    async def _load_task_for_read(task_id_arg, **kwargs):
+        _ = kwargs
+        return owner_user_id, {
+            'task_id': task_id_arg,
+            'provider': 'btn_image2',
+            'status': 'SUCCEEDED',
+            'archive_status': 'NOT_REQUIRED',
+            'download_ready': False,
+            'created_at': 10,
+            'updated_at': 20,
+            'artifact_kind': 'image',
+            'image_urls': [],
+            'generation_params': {
+                'saved_image_dir': str(image_dir),
+                'image_files': "['image_001.png', 'image_002.png']",
+            },
+        }
+
+    material_stub._load_task_for_read = _load_task_for_read
+    material_stub._user_root_dir = lambda user_id: tmp_path / 'data' / 'cache' / 'material_packages' / str(user_id)
+    material_stub._task_artifact_user_root_dir = lambda user_id: tmp_path / 'mounted-artifacts' / str(user_id)
+
+    requester = StubUserModel(id=owner_user_id, role='user')
+    response = _run(tasks_module.get_unified_task_preview(task_id=task_id, refresh_status=False, user=requester))
+
+    assert response.image_urls == [
+        f'/api/v1/tasks/{task_id}/images/0',
+        f'/api/v1/tasks/{task_id}/images/1',
+    ]
+    assert response.primary_image_url == f'/api/v1/tasks/{task_id}/images/0'
+    assert response.thumbnail_url == f'/api/v1/tasks/{task_id}/images/0'
+
+
 def test_unified_tasks_list_skips_local_image_proxy_resolution(tasks_router_module, tmp_path):
     tasks_module, material_stub = tasks_router_module
     owner_user_id = 'user-1'
