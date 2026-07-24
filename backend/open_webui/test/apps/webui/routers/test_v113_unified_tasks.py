@@ -790,7 +790,7 @@ def test_unified_task_preview_uses_local_image_output_when_artifacts_are_mounted
     assert response.thumbnail_url == f'/api/v1/tasks/{task_id}/images/0'
 
 
-def test_unified_tasks_list_skips_local_image_proxy_resolution(tasks_router_module, tmp_path):
+def test_unified_tasks_list_uses_declared_image_thumbnail_without_directory_scan(tasks_router_module, tmp_path):
     tasks_module, material_stub = tasks_router_module
     owner_user_id = 'user-1'
     task_id = 'task-image-local'
@@ -852,9 +852,9 @@ def test_unified_tasks_list_skips_local_image_proxy_resolution(tasks_router_modu
 
     assert response.total == 1
     assert response.items[0].id == task_id
-    assert response.items[0].image_urls == []
-    assert response.items[0].primary_image_url is None
-    assert response.items[0].thumbnail_url is None
+    assert response.items[0].image_urls == [f'/api/v1/tasks/{task_id}/images/0']
+    assert response.items[0].primary_image_url == f'/api/v1/tasks/{task_id}/images/0'
+    assert response.items[0].thumbnail_url == f'/api/v1/tasks/{task_id}/images/0'
 
 
 def test_unified_tasks_list_skips_image_directory_scan(tasks_router_module, tmp_path):
@@ -921,9 +921,9 @@ def test_unified_tasks_list_skips_image_directory_scan(tasks_router_module, tmp_
 
     assert response.total == 1
     assert response.items[0].id == task_id
-    assert response.items[0].image_urls == []
-    assert response.items[0].primary_image_url is None
-    assert response.items[0].thumbnail_url is None
+    assert response.items[0].image_urls == [f'/api/v1/tasks/{task_id}/images/0']
+    assert response.items[0].primary_image_url == f'/api/v1/tasks/{task_id}/images/0'
+    assert response.items[0].thumbnail_url == f'/api/v1/tasks/{task_id}/images/0'
 
 
 def test_unified_task_image_route_streams_local_image(tasks_router_module, tmp_path):

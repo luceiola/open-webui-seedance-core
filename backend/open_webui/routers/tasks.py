@@ -392,6 +392,37 @@ def _build_local_task_image_proxy_urls(task_id: str, owner_user_id: str, item: d
     return [f'/api/v1/tasks/{task_id}/images/{idx}' for idx, _ in enumerate(paths)]
 
 
+def _build_declared_task_image_thumbnail_url(task_id: str, owner_user_id: str, item: dict[str, Any]) -> Optional[str]:
+    """Build a list-safe first-image URL without touching local disk or SMB."""
+    generation_params = item.get('generation_params')
+    if not isinstance(generation_params, dict):
+        return None
+
+    image_output_dir_text = str(
+        generation_params.get('saved_image_dir')
+        or generation_params.get('image_output_dir')
+        or ''
+    ).strip()
+    if not image_output_dir_text:
+        return None
+
+    try:
+        image_output_dir = Path(image_output_dir_text).expanduser().resolve()
+        user_root = Path(material_packages_router._user_root_dir(str(owner_user_id))).resolve()
+        image_output_dir.relative_to(user_root)
+    except Exception:
+        return None
+
+    image_files = _parse_string_list(generation_params.get('image_files'))
+    try:
+        saved_count = int(generation_params.get('saved_image_count') or generation_params.get('output_images') or 0)
+    except (TypeError, ValueError):
+        saved_count = 0
+    if not image_files and saved_count <= 0:
+        return None
+    return f'/api/v1/tasks/{task_id}/images/0'
+
+
 def _build_local_task_images_zip(image_paths: list[Path]) -> bytes:
     buffer = io.BytesIO()
     used_names: set[str] = set()
@@ -586,8 +617,12 @@ def _to_unified_task_item(
     if artifact_kind_value is None:
         artifact_kind_value = 'image' if primary_image_url_value or image_urls_value else 'video'
 
-    if artifact_kind_value == 'image' and not image_urls_value and resolve_local_images:
-        image_urls_value = _build_local_task_image_proxy_urls(task_id, owner_user_id, item)
+    if artifact_kind_value == 'image' and not image_urls_value:
+        if resolve_local_images:
+            image_urls_value = _build_local_task_image_proxy_urls(task_id, owner_user_id, item)
+        else:
+            thumbnail_url = _build_declared_task_image_thumbnail_url(task_id, owner_user_id, item)
+            image_urls_value = [thumbnail_url] if thumbnail_url else []
         if image_urls_value and not primary_image_url_value:
             primary_image_url_value = image_urls_value[0]
 
