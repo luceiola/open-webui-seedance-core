@@ -40,6 +40,7 @@ version_registry: templates/versions/registry.json
 2. 默认质量：`auto`。
 3. 默认模型：`gpt-image-2`。
 4. 用户明确指定时，始终以用户值覆盖默认值。
+5. 用户要求生成 N 张图片时，N 仅映射到工具/API 的 `n` 参数，不得把“生成 N 张/共 N 张”等数量指令带入 `prompt`。仅当用户明确要求拼图、九宫格、对比图等单张合成画面时，数量才属于 `prompt` 内容。
 
 ## 多图参考与自然语言映射
 
