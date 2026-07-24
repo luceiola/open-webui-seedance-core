@@ -35,6 +35,25 @@ if [[ -n "${DATA_DIR}" ]]; then
   echo "[INFO] DATA_DIR=${DATA_DIR}"
 fi
 
+if [[ -n "${UPLOAD_DIR:-}" ]]; then
+  if [[ ! -d "${UPLOAD_DIR}" ]]; then
+    echo "[ERROR] UPLOAD_DIR does not exist: ${UPLOAD_DIR}"
+    exit 2
+  fi
+  if [[ ! -r "${UPLOAD_DIR}" || ! -w "${UPLOAD_DIR}" || ! -x "${UPLOAD_DIR}" ]]; then
+    echo "[ERROR] UPLOAD_DIR is not readable, writable, and searchable: ${UPLOAD_DIR}"
+    exit 2
+  fi
+  UPLOAD_DIR_PROBE="${UPLOAD_DIR}/.open-webui-upload-probe-$$"
+  if ! (umask 077 && : > "${UPLOAD_DIR_PROBE}" && rm -f "${UPLOAD_DIR_PROBE}"); then
+    rm -f "${UPLOAD_DIR_PROBE}" 2>/dev/null || true
+    echo "[ERROR] UPLOAD_DIR write probe failed: ${UPLOAD_DIR}"
+    exit 2
+  fi
+  export UPLOAD_DIR
+  echo "[INFO] uploads=${UPLOAD_DIR}"
+fi
+
 if [[ -n "${TASK_ARTIFACTS_ROOT:-}" ]]; then
   if [[ ! -d "${TASK_ARTIFACTS_ROOT}" ]]; then
     echo "[ERROR] TASK_ARTIFACTS_ROOT does not exist: ${TASK_ARTIFACTS_ROOT}"
