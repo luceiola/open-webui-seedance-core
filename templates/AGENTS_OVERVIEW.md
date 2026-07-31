@@ -85,7 +85,19 @@
   - `get_generation_task_status`
   - `wait_generation_task`
 
-## 7) BTN Image2 图片 Agent（au vendor）
+## 7) RunningHub Hailuo H3 视频 Agent（au vendor）
+
+- 用途：固定调用 `au vendor rh-hailuo-h3-video`，支持文生视频、显式首尾帧图生视频和多模态参考生视频。
+- System Prompt：`prompts/runninghub_hailuo_h3_system_prompt.txt`
+- Skill：`skills/runninghub-hailuo-h3-execution-skill/SKILL.md`
+- Tool：`runninghub_hailuo_h3_tool.py`
+- 关键入口函数：
+  - `generate_video_with_runninghub_hailuo_h3`
+  - `list_generation_tasks`
+  - `get_generation_task_status`
+  - `wait_generation_task`
+
+## 8) BTN Image2 图片 Agent（au vendor）
 
 - 用途：调用 `au vendor btn-image2-gen / btn-image2-edit`，默认 9:16 竖屏尺寸与 auto 质量，支持多图参考并写入统一任务中心。
 - 说明：该 Agent 为直接等待完成型，不提供查询方法。
@@ -96,7 +108,7 @@
   - `generate_image_with_btn_image2_gen`
   - `edit_image_with_btn_image2`
 
-## 8) 其他文件说明
+## 9) 其他文件说明
 
 - `skills/seedance-user-guide-skill/SKILL.md`：固定版用户手册输出技能（说明类，不负责生成任务）。
 - `prompts/seedance_video_description_prompt.txt`：视频描述模板提示词（模板用途，非主编排 Agent）。

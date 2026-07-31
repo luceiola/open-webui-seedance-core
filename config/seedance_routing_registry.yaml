@@ -1,6 +1,6 @@
 {
   "version": "v1",
-  "updated_at": "2026-07-13T16:40:00+08:00",
+  "updated_at": "2026-07-31T00:00:00+08:00",
   "rules": [
     {
       "rule_id": "R-DSP-001",
@@ -132,6 +132,30 @@
           "resolution": "720p",
           "ratio": "9:16",
           "duration": 5
+        }
+      }
+    },
+    {
+      "rule_id": "R-RHH3-001",
+      "status": "active",
+      "priority": 110,
+      "intent": "runninghub_hailuo_h3_video_generate",
+      "trigger": {
+        "mode": "explicit_or_detected",
+        "conditions": [
+          "contains_video_generation_intent",
+          "contains_hailuo_h3_intent"
+        ]
+      },
+      "route": {
+        "skill": "runninghub-hailuo-h3-execution-skill",
+        "tool": "generate_video_with_runninghub_hailuo_h3",
+        "kb_scope": [],
+        "template_id": "",
+        "params": {
+          "resolution": "2K",
+          "duration": 5,
+          "ratio": "adaptive"
         }
       }
     },
