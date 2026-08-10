@@ -1,7 +1,7 @@
 """
 title: GPT Image 2 Media Tool
 author: local-dev
-version: 0.1.0
+version: 0.1.1
 required_open_webui_version: 0.8.0
 requirements: httpx>=0.28.1
 """
@@ -29,16 +29,82 @@ _TOOL_DIR = Path(__file__).resolve().parent
 if str(_TOOL_DIR) not in sys.path:
     sys.path.append(str(_TOOL_DIR))
 
-from shared.toolkit import (
-    bridge_upsert,
-    build_auth_headers,
-    build_base_url,
-    compact_media_asset_item,
-    extract_media_asset_references,
-    extract_request_id,
-    normalize_httpx_error,
-    request_openwebui_json,
+
+_SHARED_TOOLKIT_SYMBOLS = (
+    "bridge_upsert",
+    "build_auth_headers",
+    "build_base_url",
+    "compact_media_asset_item",
+    "extract_media_asset_references",
+    "extract_request_id",
+    "normalize_httpx_error",
+    "request_openwebui_json",
 )
+
+
+def _ensure_shared_toolkit_loaded(*, force_reload: bool = False) -> None:
+    import types
+
+    toolkit_mod = sys.modules.get("shared.toolkit")
+    if (
+        toolkit_mod
+        and all(hasattr(toolkit_mod, name) for name in _SHARED_TOOLKIT_SYMBOLS)
+        and not force_reload
+    ):
+        return
+
+    candidates = [
+        _TOOL_DIR / "shared" / "toolkit.py",
+        Path.cwd() / "templates" / "shared" / "toolkit.py",
+        Path.cwd().parent / "templates" / "shared" / "toolkit.py",
+    ]
+    toolkit_path = next((path for path in candidates if path.exists() and path.is_file()), None)
+    if toolkit_path is None:
+        return
+
+    shared_pkg = sys.modules.get("shared")
+    if shared_pkg is None:
+        shared_pkg = types.ModuleType("shared")
+        shared_pkg.__path__ = [str(toolkit_path.parent)]
+        sys.modules["shared"] = shared_pkg
+    else:
+        package_paths = list(getattr(shared_pkg, "__path__", []) or [])
+        shared_path = str(toolkit_path.parent)
+        if shared_path not in package_paths:
+            package_paths.append(shared_path)
+            shared_pkg.__path__ = package_paths
+
+    if toolkit_mod is None:
+        toolkit_mod = types.ModuleType("shared.toolkit")
+        sys.modules["shared.toolkit"] = toolkit_mod
+    toolkit_mod.__dict__["__file__"] = str(toolkit_path)
+    exec(toolkit_path.read_text(encoding="utf-8"), toolkit_mod.__dict__)
+
+
+_ensure_shared_toolkit_loaded()
+try:
+    from shared.toolkit import (
+        bridge_upsert,
+        build_auth_headers,
+        build_base_url,
+        compact_media_asset_item,
+        extract_media_asset_references,
+        extract_request_id,
+        normalize_httpx_error,
+        request_openwebui_json,
+    )
+except Exception:
+    _ensure_shared_toolkit_loaded(force_reload=True)
+    from shared.toolkit import (
+        bridge_upsert,
+        build_auth_headers,
+        build_base_url,
+        compact_media_asset_item,
+        extract_media_asset_references,
+        extract_request_id,
+        normalize_httpx_error,
+        request_openwebui_json,
+    )
 
 
 class Tools:

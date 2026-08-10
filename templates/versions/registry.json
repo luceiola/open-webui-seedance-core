@@ -5,7 +5,7 @@
     "seedance_material_package": {
       "tool": {
         "file": "templates/seedance_material_package_tool.py",
-        "version": "0.2.2"
+        "version": "0.2.3"
       },
       "skill": {
         "file": "templates/skills/seedance-execution-skill/SKILL.md",
@@ -19,7 +19,7 @@
     "happyhorse_media": {
       "tool": {
         "file": "templates/happyhorse_media_tool.py",
-        "version": "0.1.0"
+        "version": "0.1.1"
       },
       "skill": {
         "file": "templates/skills/happyhorse-execution-skill/SKILL.md",
@@ -33,7 +33,7 @@
     "gpt_image2_media": {
       "tool": {
         "file": "templates/gpt_image2_media_tool.py",
-        "version": "0.1.0"
+        "version": "0.1.1"
       },
       "skill": {
         "file": "templates/skills/gpt-image2-execution-skill/SKILL.md",
