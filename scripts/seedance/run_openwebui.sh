@@ -7,6 +7,35 @@ HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8801}"
 DATA_DIR="${DATA_DIR:-}"
 
+resolve_python_from_entrypoint() {
+  local entrypoint="$1"
+  local shebang
+  local first_token
+  local second_token
+
+  shebang="$(head -n 1 "${entrypoint}" 2>/dev/null || true)"
+  [[ "${shebang}" == '#!'* ]] || return 1
+
+  read -r first_token second_token _ <<<"${shebang#\#!}"
+  [[ -n "${first_token:-}" ]] || return 1
+
+  if [[ "${first_token}" == */env ]]; then
+    local cmd="${second_token:-python}"
+    if command -v "${cmd}" >/dev/null 2>&1; then
+      command -v "${cmd}"
+      return 0
+    fi
+    return 1
+  fi
+
+  if [[ -x "${first_token}" ]]; then
+    echo "${first_token}"
+    return 0
+  fi
+
+  return 1
+}
+
 if ! command -v python >/dev/null 2>&1; then
   echo "[ERROR] python not found in current env."
   echo "Activate conda env that contains runtime dependencies."
@@ -16,6 +45,16 @@ if ! command -v open-webui >/dev/null 2>&1; then
   echo "[ERROR] open-webui command not found in current env."
   echo "Activate conda env and install project dependencies."
   exit 1
+fi
+
+PYTHON_BIN="$(command -v python)"
+OPEN_WEBUI_BIN="$(command -v open-webui)"
+if OPEN_WEBUI_PYTHON="$(resolve_python_from_entrypoint "${OPEN_WEBUI_BIN}")"; then
+  if [[ "${OPEN_WEBUI_PYTHON}" != "${PYTHON_BIN}" ]]; then
+    echo "[WARN] python in PATH (${PYTHON_BIN}) differs from open-webui runtime (${OPEN_WEBUI_PYTHON})."
+    echo "[WARN] using open-webui runtime for dependency checks."
+  fi
+  PYTHON_BIN="${OPEN_WEBUI_PYTHON}"
 fi
 
 bash "${ROOT_DIR}/scripts/seedance/preflight.sh" --auto-fix
@@ -73,9 +112,9 @@ if [[ -n "${TASK_ARTIFACTS_ROOT:-}" ]]; then
 fi
 
 if [[ "${MATERIAL_PACK_TOS_ENABLED:-false}" =~ ^(1|true|TRUE|yes|YES|on|ON)$ ]]; then
-  if ! python -c "import tos" >/dev/null 2>&1; then
+  if ! "${PYTHON_BIN}" -c "import tos" >/dev/null 2>&1; then
     echo "[ERROR] MATERIAL_PACK_TOS_ENABLED=true but python package 'tos' is missing."
-    echo "Run: pip install tos"
+    echo "Run: ${PYTHON_BIN} -m pip install tos"
     exit 2
   fi
 fi

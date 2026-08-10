@@ -16,17 +16,17 @@
       },
       "bindings": [
         {
-          "group_id": "grp_seedance_k1",
+          "group_id": "cdf3b84c-1ae7-4feb-85e0-b6d73c006f78",
           "alias": "k1",
           "priority": 100
         },
         {
-          "group_id": "grp_seedance_k2",
+          "group_id": "a7ec4d20-f0d1-4bd3-b7c8-5d8a35f6fc2e",
           "alias": "k2",
           "priority": 100
         },
         {
-          "group_id": "grp_seedance_k3",
+          "group_id": "edbd9288-1053-4a3d-a9a6-a538cffbf2df",
           "alias": "k3",
           "priority": 100
         }
@@ -48,17 +48,17 @@
       },
       "bindings": [
         {
-          "group_id": "grp_seedance_k1",
+          "group_id": "cdf3b84c-1ae7-4feb-85e0-b6d73c006f78",
           "alias": "k1",
           "priority": 100
         },
         {
-          "group_id": "grp_seedance_k2",
+          "group_id": "a7ec4d20-f0d1-4bd3-b7c8-5d8a35f6fc2e",
           "alias": "k2",
           "priority": 100
         },
         {
-          "group_id": "grp_seedance_k3",
+          "group_id": "edbd9288-1053-4a3d-a9a6-a538cffbf2df",
           "alias": "k3",
           "priority": 100
         }
@@ -80,17 +80,17 @@
       },
       "bindings": [
         {
-          "group_id": "grp_seedance_k1",
+          "group_id": "cdf3b84c-1ae7-4feb-85e0-b6d73c006f78",
           "alias": "k1",
           "priority": 100
         },
         {
-          "group_id": "grp_seedance_k2",
+          "group_id": "a7ec4d20-f0d1-4bd3-b7c8-5d8a35f6fc2e",
           "alias": "k2",
           "priority": 100
         },
         {
-          "group_id": "grp_seedance_k3",
+          "group_id": "edbd9288-1053-4a3d-a9a6-a538cffbf2df",
           "alias": "k3",
           "priority": 100
         }

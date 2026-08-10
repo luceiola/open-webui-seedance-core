@@ -318,3 +318,15 @@ dist
 cypress/videos
 cypress/screenshots
 .vscode/settings.json
+export/generation-task-query-20260610-112222/task_194_empty_duration.jsonl
+export/generation-task-query-20260610-112222/task_194.before_empty_duration_split.20260611-101121.jsonl
+export/generation-task-query-20260610-112222/task_194.jsonl
+export/generation-task-query-20260610-112222/task_252_sample5.jsonl
+export/generation-task-query-20260610-112222/task_252_sample50.jsonl
+export/generation-task-query-20260610-112222/task_252.jsonl
+export/generation-task-query-20260610-112222/tasks_gn_seedance_prompt_cleaned.csv
+export/generation-task-query-20260610-112222/tasks.csv
+export/generation-task-query-20260610-112222/tasks.json
+export/generation-task-query-20260610-112222/index.html
+export/generation-task-query-20260610-112222/summary.json
+export/generation-task-query-20260610-112222.zip
