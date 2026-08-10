@@ -32,7 +32,7 @@
 
 ```yaml
 version: v1
-updated_at: "2026-05-14T00:00:00+08:00"
+updated_at: "2026-08-10T00:00:00+08:00"
 rules:
   - rule_id: R-DSP-001
     status: active
@@ -44,31 +44,14 @@ rules:
         - single_media_reference_only
         - media_type=image
     route:
-      skill: doubao-seed-prompt-execution-skill
-      tool: describe_media_assets_for_prompt
+      skill: volcengine-media-description-execution-skill
+      tool: describe_image
       kb_scope: []
       template_id: ""
       params:
-        granularity: brief
-        output_format: text
-  - rule_id: R-DSP-002
-    status: active
-    priority: 90
-    intent: media_describe_template_storyboard
-    trigger:
-      mode: explicit
-      phrases:
-        - 按专业分镜模板输出
-        - 按模板返回
-    route:
-      skill: doubao-seed-prompt-execution-skill
-      tool: describe_media_assets_for_prompt
-      kb_scope:
-        - KB-02-模板库
-      template_id: storyboard_list_v1
-      params:
-        granularity: detailed
-        output_format: text
+        description_method: detailed_visual
+        custom_instruction: ""
+        output_language: zh-CN
 ```
 
 ## 三、优先级与冲突处理

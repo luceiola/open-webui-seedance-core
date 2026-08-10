@@ -44,34 +44,6 @@
         "version": "v1.1.6"
       }
     },
-    "doubao_seed_prompt": {
-      "tool": {
-        "file": "templates/doubao_seed_prompt_tool.py",
-        "version": "0.4.0"
-      },
-      "skill": {
-        "file": "templates/skills/doubao-seed-prompt-execution-skill/SKILL.md",
-        "version": "v1.2.0"
-      },
-      "system_prompt": {
-        "file": "templates/prompts/doubao_seed_prompt_system_prompt.txt",
-        "version": "v1.2.0"
-      }
-    },
-    "doubao_seed_storyboard_template": {
-      "tool": {
-        "file": "templates/doubao_seed_prompt_tool.py",
-        "version": "0.4.0"
-      },
-      "skill": {
-        "file": "templates/skills/doubao-seed-storyboard-template-execution-skill/SKILL.md",
-        "version": "v1.0.0"
-      },
-      "system_prompt": {
-        "file": "templates/prompts/doubao_seed_storyboard_template_system_prompt.txt",
-        "version": "v1.0.0"
-      }
-    },
     "runninghub_seedance2_vendor": {
       "tool": {
         "file": "templates/runninghub_seedance2_tool.py",
