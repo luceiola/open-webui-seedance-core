@@ -33,7 +33,7 @@ version_registry: templates/versions/registry.json
 
 - 分辨率固定 `2K`。
 - 时长为 5-15 秒，默认 5 秒。
-- t2v/multimodal 比例默认 `adaptive`；可选 `21:9/16:9/4:3/1:1/3:4/9:16`。
+- t2v/multimodal 比例默认 `9:16`；可选 `21:9/16:9/4:3/1:1/3:4/9:16`。
 - i2v 不设置比例。
 - multimodal 最多 9 张图片、3 个视频、3 个音频。
 - 本地路径、http(s) 和 WebUI `%引用名` 均由 Tool 统一解析。

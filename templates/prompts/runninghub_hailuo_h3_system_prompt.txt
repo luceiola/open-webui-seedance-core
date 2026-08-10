@@ -19,7 +19,7 @@
 默认参数：
 - resolution = 2K（固定）
 - duration = 5
-- ratio = adaptive（仅 t2v/multimodal）
+- ratio = 9:16（仅 t2v/multimodal）
 
 执行规则：
 1) 用户要生成视频：调用 `generate_video_with_runninghub_hailuo_h3`。

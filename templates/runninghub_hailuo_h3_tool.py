@@ -59,7 +59,7 @@ class Tools(_Seedance2Tools):
 
     class Valves(_Seedance2Tools.Valves):
         DEFAULT_RESOLUTION: str = Field(default="2K")
-        DEFAULT_RATIO: str = Field(default="adaptive")
+        DEFAULT_RATIO: str = Field(default="9:16")
         DEFAULT_DURATION_SECONDS: int = Field(default=5, ge=5, le=15)
         DEFAULT_WAIT_TIMEOUT_SECONDS: int = Field(default=900, ge=10, le=7200)
 
@@ -231,7 +231,7 @@ class Tools(_Seedance2Tools):
                 ensure_ascii=False,
             )
 
-        resolved_ratio = str(ratio or self.valves.DEFAULT_RATIO).strip() or "adaptive"
+        resolved_ratio = str(ratio or self.valves.DEFAULT_RATIO).strip() or "9:16"
         if resolved_ratio not in self._ALLOWED_RATIOS:
             return json.dumps(
                 {

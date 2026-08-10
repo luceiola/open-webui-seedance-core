@@ -120,7 +120,18 @@
   - `generate_image_with_btn_image2_gen`
   - `edit_image_with_btn_image2`
 
-## 9) 其他文件说明
+## 10) 豆包图像视频描述 Agent（au vendor）
+
+- 用途：调用 `au vendor ve-multimodal-chat` 描述单张图片或单个视频，支持快速概述、详细分析、视频时间线、无障碍描述、提示词反推和 OCR/字幕提取。
+- 说明：每次只处理一个 `%素材路径` 或 HTTP(S) URL，不写入生成任务中心。
+- System Prompt：`prompts/volcengine_media_description_system_prompt.txt`
+- Skill：`skills/volcengine-media-description-execution-skill/SKILL.md`
+- Tool：`volcengine_media_description_tool.py`
+- 关键入口函数：
+  - `describe_image`
+  - `describe_video`
+
+## 11) 其他文件说明
 
 - `skills/seedance-user-guide-skill/SKILL.md`：固定版用户手册输出技能（说明类，不负责生成任务）。
 - `prompts/seedance_video_description_prompt.txt`：视频描述模板提示词（模板用途，非主编排 Agent）。
