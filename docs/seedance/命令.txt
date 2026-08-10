@@ -1,0 +1,3 @@
+cd /Users/lucas/srv/open-webui-seedance-prod
+conda activate openwebui-seedance-core
+bash scripts/seedance/run_openwebui_prod.sh
