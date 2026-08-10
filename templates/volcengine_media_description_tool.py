@@ -134,7 +134,7 @@ class Tools:
             description="Working directory for au vendor commands.",
         )
         AU_API_KEY_ENV: str = Field(
-            default="VOLCENGINE_API_KEY",
+            default="ARK_API_KEY",
             description="Environment variable containing the Volcengine API key.",
         )
         DEFAULT_MODEL: str = Field(

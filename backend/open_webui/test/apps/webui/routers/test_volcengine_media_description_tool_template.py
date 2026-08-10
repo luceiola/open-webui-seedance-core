@@ -51,6 +51,7 @@ def test_tool_exposes_only_two_public_description_functions():
         if not name.startswith("_") and callable(getattr(tool, name)) and name != "Valves"
     }
     assert public == {"describe_image", "describe_video"}
+    assert tool.valves.AU_API_KEY_ENV == "ARK_API_KEY"
 
 
 def test_describe_image_uses_image_url_and_default_method(monkeypatch):
