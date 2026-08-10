@@ -1,21 +1,11 @@
 # LLM 提示词拆分与 Skill 挂载
 
-本文给出三段可组合配置：
+本文给出两段可组合配置：
 
-1. 视频描述（用户层）
-2. 执行规范 Skill（流程层）
-3. 系统提示词（角色层）
+1. 执行规范 Skill（流程层）
+2. 系统提示词（角色层）
 
-## 1) 视频描述（用户层）
-
-文件：
-- `/Users/lucas/Documents/openwebui-seedance/templates/prompts/seedance_video_description_prompt.txt`
-
-用途：
-- 仅描述镜头语言与广告意图。
-- 不包含工具调用步骤。
-
-## 2) 执行规范 Skill（流程层）
+## 1) 执行规范 Skill（流程层）
 
 文件：
 - `/Users/lucas/Documents/openwebui-seedance/templates/skills/seedance-execution-skill/SKILL.md`
@@ -24,7 +14,7 @@
 - 约束工具调用顺序与失败处理。
 - 强制 `resolve -> generate`。
 
-## 3) 系统提示词（角色层）
+## 2) 系统提示词（角色层）
 
 文件：
 - `/Users/lucas/Documents/openwebui-seedance/templates/prompts/seedance_system_prompt.txt`
@@ -37,7 +27,7 @@
 
 1. 把系统提示词设置为模型 System Prompt。
 2. 把执行 Skill 绑定到同一模型/助手。
-3. 用户对话里只提交“视频描述正文 + asset_package_id”。
+3. 用户对话里直接提交“视频描述正文 + asset_package_id”。
 
 ## 最小实测输入（用户消息）
 

@@ -30,11 +30,8 @@ fi
 
 # 2) Tool templates
 check_file "templates/seedance_material_package_tool.py"
-check_file "templates/seedance_video_tool.py"
 check_file "templates/prompts/seedance_system_prompt.txt"
-check_file "templates/prompts/seedance_video_description_prompt.txt"
 check_file "templates/skills/seedance-execution-skill/SKILL.md"
-check_file "templates/skills/seedance-user-guide-skill/SKILL.md"
 
 # 3) Docs and scripts migrated from legacy repo
 check_file "docs/seedance/16-v1.0-需求文档.md"
