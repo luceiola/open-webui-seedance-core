@@ -693,7 +693,7 @@ TASK_ARCHIVE_FINAL_STATUSES: set[str] = {
 }
 
 TASK_SOFT_DELETE_RETENTION_DAYS = max(1, _get_int_env('TASK_SOFT_DELETE_RETENTION_DAYS', 7))
-TASK_ARCHIVE_MAX_RETRIES = max(0, _get_int_env('TASK_ARCHIVE_MAX_RETRIES', 3))
+TASK_ARCHIVE_MAX_RETRIES = max(0, _get_int_env('TASK_ARCHIVE_MAX_RETRIES', 12))
 TASK_ARCHIVE_POLL_INTERVAL_SECONDS = max(2, _get_int_env('TASK_ARCHIVE_POLL_INTERVAL_SECONDS', 8))
 TASK_ARCHIVE_POLL_MAX_SECONDS = max(30, _get_int_env('TASK_ARCHIVE_POLL_MAX_SECONDS', 1800))
 
@@ -1461,6 +1461,10 @@ def _extract_error_info(payload: Any) -> dict[str, Optional[str]]:
     }
 
 
+class _RetryableVideoDownloadError(RuntimeError):
+    pass
+
+
 async def _download_video_file(video_url: str, dest_path: Path, *, timeout_seconds: int = 300) -> None:
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = dest_path.with_suffix(dest_path.suffix + '.part')
@@ -1475,7 +1479,11 @@ async def _download_video_file(video_url: str, dest_path: Path, *, timeout_secon
                         f.write(chunk)
 
     if not temp_path.exists() or temp_path.stat().st_size <= 0:
-        raise RuntimeError('Downloaded video file is empty')
+        temp_path.unlink(missing_ok=True)
+        content_length = str(resp.headers.get('content-length') or 'unknown')
+        raise _RetryableVideoDownloadError(
+            f'Video download returned an empty body (HTTP {resp.status_code}, Content-Length={content_length})'
+        )
     temp_path.replace(dest_path)
 
 
@@ -1594,7 +1602,11 @@ async def _archive_task_record_if_needed(
     try:
         await _download_video_file(video_url, video_path)
     except Exception as e:
-        task_record['archive_status'] = ARCHIVE_STATUS_FAILED
+        is_retryable = isinstance(e, _RetryableVideoDownloadError)
+        retries_exhausted = TASK_ARCHIVE_MAX_RETRIES > 0 and retry_count + 1 >= TASK_ARCHIVE_MAX_RETRIES
+        task_record['archive_status'] = (
+            ARCHIVE_STATUS_PENDING if is_retryable and not retries_exhausted else ARCHIVE_STATUS_FAILED
+        )
         task_record['archive_error'] = str(e)
         task_record['archive_updated_at'] = int(time.time())
         _sync_task_serving_fields(owner_user_id, task_record)

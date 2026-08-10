@@ -1264,6 +1264,82 @@ def test_archive_succeeded_task_does_not_redownload(material_packages_router_mod
     assert result['thumbnail_url'] == material_module._build_task_thumbnail_url(task_id)
 
 
+def test_empty_video_download_is_retryable_and_removes_partial_file(
+    material_packages_router_module,
+    tmp_path,
+):
+    material_module = material_packages_router_module
+
+    class EmptyResponse:
+        status_code = 200
+        headers = {'content-length': '0'}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def aiter_bytes(self, chunk_size):
+            if False:
+                yield b''
+
+    class EmptyClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def stream(self, method, url):
+            return EmptyResponse()
+
+    material_module.httpx.AsyncClient = lambda **kwargs: EmptyClient()
+    video_path = tmp_path / 'video.mp4'
+
+    with pytest.raises(material_module._RetryableVideoDownloadError) as exc_info:
+        _run(material_module._download_video_file('https://example.com/video.mp4', video_path))
+
+    assert 'HTTP 200' in str(exc_info.value)
+    assert 'Content-Length=0' in str(exc_info.value)
+    assert not video_path.with_suffix('.mp4.part').exists()
+
+
+def test_empty_archive_download_stays_pending_until_retry_limit(material_packages_router_module):
+    material_module = material_packages_router_module
+    user_id = 'user-1'
+    task_id = 'task-empty-video'
+
+    async def _empty_download(*args, **kwargs):
+        raise material_module._RetryableVideoDownloadError(
+            'Video download returned an empty body (HTTP 200, Content-Length=0)'
+        )
+
+    material_module._download_video_file = _empty_download
+    material_module.TASK_ARCHIVE_MAX_RETRIES = 3
+    task_record = {
+        'task_id': task_id,
+        'user_id': user_id,
+        'status': 'SUCCEEDED',
+        'artifact_kind': 'video',
+        'video_url': 'https://example.com/video.mp4',
+        'archive_status': 'PENDING',
+        'archive_retry_count': 0,
+        'created_at': 1,
+        'updated_at': 1,
+    }
+
+    pending = _run(material_module._archive_task_record_if_needed(user_id, dict(task_record)))
+    assert pending['archive_status'] == 'PENDING'
+    assert pending['archive_retry_count'] == 1
+    assert 'empty body' in pending['archive_error']
+
+    pending['archive_retry_count'] = 2
+    exhausted = _run(material_module._archive_task_record_if_needed(user_id, pending))
+    assert exhausted['archive_status'] == 'FAILED'
+    assert exhausted['archive_retry_count'] == 3
+
+
 def test_key_routing_alias_raises_on_multi_group_conflict(material_packages_router_module):
     material_module = material_packages_router_module
     provider_config = {
