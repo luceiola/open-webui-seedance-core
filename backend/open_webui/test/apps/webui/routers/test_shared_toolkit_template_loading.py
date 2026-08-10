@@ -9,7 +9,6 @@ REPO_ROOT = Path(__file__).resolve().parents[6]
 TOOL_PATHS = (
     REPO_ROOT / "templates" / "seedance_material_package_tool.py",
     REPO_ROOT / "templates" / "happyhorse_media_tool.py",
-    REPO_ROOT / "templates" / "gpt_image2_media_tool.py",
 )
 
 
