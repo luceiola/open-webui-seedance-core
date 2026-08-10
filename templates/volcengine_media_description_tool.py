@@ -134,7 +134,7 @@ class Tools:
             description="Working directory for au vendor commands.",
         )
         AU_API_KEY_ENV: str = Field(
-            default="ARK_API_KEY",
+            default="VOLCENGINE_API_KEY",
             description="Environment variable containing the Volcengine API key.",
         )
         DEFAULT_MODEL: str = Field(
@@ -275,13 +275,28 @@ class Tools:
         if not resolved_env:
             raise RuntimeError("api key env is required")
 
+        process_env = os.environ.copy()
+        if not str(process_env.get(resolved_env) or "").strip():
+            env_path = workdir / ".env"
+            if env_path.exists() and env_path.is_file():
+                for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+                    line = raw_line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    if key.strip() == resolved_env:
+                        resolved_value = value.strip().strip('"').strip("'")
+                        if resolved_value:
+                            process_env[resolved_env] = resolved_value
+                        break
+
         argv = [au_bin, "vendor", *command_args, "--api-key-env", resolved_env, "--full-json", "--quiet"]
         try:
             completed = await asyncio.to_thread(
                 subprocess.run,
                 argv,
                 cwd=str(workdir),
-                env=os.environ.copy(),
+                env=process_env,
                 capture_output=True,
                 text=True,
                 timeout=int(self.valves.SUBPROCESS_TIMEOUT_SECONDS),
@@ -337,7 +352,7 @@ class Tools:
         return None, response
 
     def _extract_request_id(self, text: str) -> Optional[str]:
-        match = re.search(r"request[_ ]id\s*[:=]\s*([A-Za-z0-9_-]+)", str(text or ""), flags=re.I)
+        match = re.search(r"request[\s_]+id\s*[:=]\s*([A-Za-z0-9_-]+)", str(text or ""), flags=re.I)
         return str(match.group(1)) if match else None
 
     async def _describe(
@@ -378,8 +393,23 @@ class Tools:
             custom_instruction=custom_instruction,
             output_language=output_language,
         )
-        command_args = ["ve-multimodal-chat", "--prompt", prompt]
-        command_args.extend(["--image-url" if media_type == "image" else "--file-url", str(resolved["url"])])
+        if media_type == "image":
+            command_args = ["ve-multimodal-chat", "--prompt", prompt, "--image-url", str(resolved["url"])]
+        else:
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "video_url", "video_url": {"url": str(resolved["url"])}},
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ]
+            command_args = [
+                "ve-multimodal-chat",
+                "--messages-json",
+                json.dumps(messages, ensure_ascii=False),
+            ]
         model = str(self.valves.DEFAULT_MODEL or "").strip()
         if model:
             command_args.extend(["--model", model])

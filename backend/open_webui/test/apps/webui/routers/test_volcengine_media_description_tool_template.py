@@ -51,7 +51,7 @@ def test_tool_exposes_only_two_public_description_functions():
         if not name.startswith("_") and callable(getattr(tool, name)) and name != "Valves"
     }
     assert public == {"describe_image", "describe_video"}
-    assert tool.valves.AU_API_KEY_ENV == "ARK_API_KEY"
+    assert tool.valves.AU_API_KEY_ENV == "VOLCENGINE_API_KEY"
 
 
 def test_describe_image_uses_image_url_and_default_method(monkeypatch):
@@ -94,9 +94,14 @@ def test_describe_video_uses_file_url_timeline_and_custom_focus(monkeypatch):
     assert payload["ok"] is True
     assert payload["method"] == "video_timeline"
     args = captured["command_args"]
-    assert "--file-url" in args
-    assert "https://media.test/video.mp4" in args
-    prompt = args[args.index("--prompt") + 1]
+    assert "--file-url" not in args
+    assert "--messages-json" in args
+    messages = json.loads(args[args.index("--messages-json") + 1])
+    assert messages[0]["content"][0] == {
+        "type": "video_url",
+        "video_url": {"url": "https://media.test/video.mp4"},
+    }
+    prompt = messages[0]["content"][1]["text"]
     assert "MM:SS" in prompt
     assert "重点关注人物服装" in prompt
 
@@ -193,6 +198,27 @@ def test_command_failure_preserves_message_and_request_id(monkeypatch):
     assert payload["error_code"] == "CommandExecutionFailed"
     assert payload["request_id"] == "req-media-1"
     assert "provider failed" in payload["error_message"]
+
+
+def test_au_subprocess_loads_named_key_from_workdir_env(monkeypatch, tmp_path):
+    module = _load_module("test_volcengine_media_description_env_fallback")
+    tool = module.Tools()
+    tool.valves.AU_BIN = "/fake/au"
+    tool.valves.AU_WORKDIR = str(tmp_path)
+    (tmp_path / ".env").write_text("VOLCENGINE_API_KEY=test-key\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def _fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["env"] = kwargs["env"]
+        return module.subprocess.CompletedProcess(argv, 0, stdout='{"response": {}}', stderr="")
+
+    monkeypatch.delenv("VOLCENGINE_API_KEY", raising=False)
+    monkeypatch.setattr(module.subprocess, "run", _fake_run)
+    asyncio.run(tool._run_au_vendor_json(command_args=["ve-multimodal-chat", "--prompt", "test"]))
+
+    assert captured["env"]["VOLCENGINE_API_KEY"] == "test-key"
+    assert "test-key" not in captured["argv"]
 
 
 def test_structured_content_parts_are_joined(monkeypatch):
