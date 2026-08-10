@@ -61,15 +61,15 @@
     "runninghub_seedance25_vendor": {
       "tool": {
         "file": "templates/runninghub_seedance25_tool.py",
-        "version": "0.1.0"
+        "version": "0.1.1"
       },
       "skill": {
         "file": "templates/skills/runninghub-seedance25-execution-skill/SKILL.md",
-        "version": "v1.0.0"
+        "version": "v1.0.1"
       },
       "system_prompt": {
         "file": "templates/prompts/runninghub_seedance25_system_prompt.txt",
-        "version": "v1.0.0"
+        "version": "v1.0.1"
       }
     },
     "btn_image2_vendor": {

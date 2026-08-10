@@ -1,7 +1,7 @@
 ---
 name: runninghub-seedance25-execution-skill
 description: RunningHub Seedance 2.5 专用视频执行规范，支持文生、显式首尾帧图生和多模态参考生成。
-version: v1.0.0
+version: v1.0.1
 routing_registry: config/seedance_routing_registry.yaml
 version_registry: templates/versions/registry.json
 ---
@@ -32,8 +32,9 @@ version_registry: templates/versions/registry.json
 ## 默认参数与范围
 
 - `resolution=720p`；可选 `480p/720p/1080p/2k/4k`。
-- `duration=5`；可选 `-1`（自动）或 4-30 秒。
-- t2v/multimodal 默认 `ratio=9:16`；可选 `adaptive/16:9/4:3/1:1/3:4/9:16/21:9`。
+- `duration=5`；可选 `-1`（自动）或 4-30 秒；多模态解析出视频时固定为 `-1`。
+- t2v、纯图片/纯音频 multimodal 默认 `ratio=9:16`；可选 `adaptive/16:9/4:3/1:1/3:4/9:16/21:9`。
+- multimodal 解析出任意视频时固定 `ratio=adaptive`，包括由 Prompt `%引用` 推导出的视频。
 - i2v 固定 `ratio=adaptive`。
 - `generate_audio=true`，`real_person_mode=true`。
 - `include_modal_order_hint=true`，`return_last_frame=false`，`web_search=false`。
@@ -49,7 +50,8 @@ version_registry: templates/versions/registry.json
 - i2v 转绘槽位仅允许 `all/firstFrameUrl/lastFrameUrl`。
 - multimodal 转绘槽位仅允许 `all/image1-image30/video1-video10`。
 - t2v 不使用转绘槽位；媒体顺序描述仅用于 multimodal。
-- 用户明确声明的合法参数覆盖默认值；未声明时直接使用默认值，不阻断提交。
+- 用户明确声明的合法参数覆盖默认值；但 multimodal 包含视频时，Tool 始终规范化为 `ratio=adaptive,duration=-1`。
+- Tool 返回的 `ratio/duration` 是实际提交值；`requested_ratio/requested_duration` 保留规范化前的合法请求值，`video_parameter_normalized` 标记是否发生覆盖。
 
 ## `%引用` 一致性
 
@@ -80,7 +82,8 @@ version_registry: templates/versions/registry.json
 
 1. 无参考素材为文生视频；普通参考素材为多模态参考生成。
 2. 只有明确提出首帧或尾帧时才使用首尾帧图生视频。
-3. 默认 720p、5 秒、9:16、生成音频并开启真人模式；如需静音或关闭真人模式请明确声明。
+3. 默认 720p、5 秒、9:16；多模态包含视频时使用自适应比例和自动时长。
+4. 默认生成音频并开启真人模式；如需静音或关闭真人模式请明确声明。
 
 ## 禁止事项
 

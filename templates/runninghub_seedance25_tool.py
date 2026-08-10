@@ -1,7 +1,7 @@
 """
 title: RunningHub Seedance 2.5 Tool
 author: local-dev
-version: 0.1.0
+version: 0.1.1
 required_open_webui_version: 0.8.0
 requirements: httpx>=0.28.1
 """
@@ -90,7 +90,8 @@ class Tools(_HailuoTools):
         return [
             "无参考素材时使用文生视频；普通参考素材使用多模态模式。",
             "只有用户明确提出首帧或尾帧时，才使用首尾帧图生视频模式。",
-            "默认 720p、5 秒、9:16、生成音频并开启真人模式；如需静音或关闭真人模式请明确声明。",
+            "默认 720p、5 秒、9:16；多模态包含视频时自动使用自适应比例和自动时长。",
+            "默认生成音频并开启真人模式；如需静音或关闭真人模式请明确声明。",
         ]
 
     def _mode_error(self, message: str, reminders: list[str]) -> str:
@@ -205,15 +206,17 @@ class Tools(_HailuoTools):
                 f"resolution must be one of: {', '.join(sorted(self._ALLOWED_RESOLUTIONS))}", reminders
             )
 
-        resolved_duration = self.valves.DEFAULT_DURATION_SECONDS if duration is None else int(duration)
-        if resolved_duration != -1 and not 4 <= resolved_duration <= 30:
+        requested_duration = self.valves.DEFAULT_DURATION_SECONDS if duration is None else int(duration)
+        if requested_duration != -1 and not 4 <= requested_duration <= 30:
             return self._invalid_parameter("duration must be -1 or an integer between 4 and 30 seconds", reminders)
+        resolved_duration = requested_duration
 
-        resolved_ratio = "adaptive" if final_mode == "i2v" else str(ratio or self.valves.DEFAULT_RATIO).strip()
-        if resolved_ratio not in self._ALLOWED_RATIOS:
+        requested_ratio = str(ratio or self.valves.DEFAULT_RATIO).strip()
+        if requested_ratio not in self._ALLOWED_RATIOS:
             return self._invalid_parameter(
                 f"ratio must be one of: {', '.join(sorted(self._ALLOWED_RATIOS))}", reminders
             )
+        resolved_ratio = "adaptive" if final_mode == "i2v" else requested_ratio
 
         resolved_generate_audio = self.valves.DEFAULT_GENERATE_AUDIO if generate_audio is None else bool(generate_audio)
         resolved_real_person_mode = (
@@ -333,6 +336,12 @@ class Tools(_HailuoTools):
                 "multimodal inputs support at most 30 images, 10 videos, and 10 audios", reminders
             )
 
+        video_parameter_normalized = False
+        if final_mode == "multimodal" and resolved_videos:
+            video_parameter_normalized = resolved_ratio != "adaptive" or resolved_duration != -1
+            resolved_ratio = "adaptive"
+            resolved_duration = -1
+
         resolved_poll_interval = int(poll_interval_seconds or self.valves.DEFAULT_POLL_INTERVAL_SECONDS)
         resolved_wait_timeout = int(wait_timeout_seconds or self.valves.DEFAULT_WAIT_TIMEOUT_SECONDS)
         resolved_max_polls = int(max_polls or self.valves.DEFAULT_MAX_POLLS)
@@ -432,6 +441,9 @@ class Tools(_HailuoTools):
             "command": self._COMMAND,
             "mode": final_mode,
             "resolution": resolved_resolution,
+            "requested_duration": requested_duration,
+            "requested_ratio": requested_ratio,
+            "video_parameter_normalized": video_parameter_normalized,
             "duration": resolved_duration,
             "ratio": resolved_ratio,
             "generate_audio": resolved_generate_audio,

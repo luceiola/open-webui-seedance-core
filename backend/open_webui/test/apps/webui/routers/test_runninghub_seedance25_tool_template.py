@@ -88,6 +88,9 @@ def test_defaults_route_to_t2v_and_are_persisted(monkeypatch):
     assert _arg_value(args, "--resolution") == "720p"
     assert _arg_value(args, "--duration") == "5"
     assert _arg_value(args, "--ratio") == "9:16"
+    assert payload["requested_duration"] == 5
+    assert payload["requested_ratio"] == "9:16"
+    assert payload["video_parameter_normalized"] is False
     assert "--generate-audio" in args
     assert "--real-person-mode" in args
     assert "--include-modal-order-hint" in args
@@ -185,11 +188,102 @@ def test_regular_references_route_to_multimodal_and_preserve_prompt(monkeypatch)
 
     args = captured["command_args"]
     assert payload["mode"] == "multimodal"
+    assert payload["requested_duration"] == 5
+    assert payload["requested_ratio"] == "9:16"
+    assert payload["duration"] == -1
+    assert payload["ratio"] == "adaptive"
+    assert payload["video_parameter_normalized"] is True
+    assert _arg_value(args, "--duration") == "-1"
+    assert _arg_value(args, "--ratio") == "adaptive"
     assert "https://media.test/reference.png" in args
     assert "https://media.test/reference.mp4" in args
     assert "%reference.png" not in args
     assert bridge_calls[0]["prompt_text"] == prompt
     assert bridge_calls[0]["generation_params"]["image_refs"] == ["主体"]
+    assert bridge_calls[0]["duration"] == -1
+    assert bridge_calls[0]["ratio"] == "adaptive"
+
+
+def test_explicit_video_normalizes_conflicting_parameters_everywhere(monkeypatch):
+    module = _load_module("test_seedance25_explicit_video_normalization")
+    tool = module.Tools()
+    captured, bridge_calls = _install_common_fakes(monkeypatch, tool)
+
+    payload = json.loads(
+        asyncio.run(
+            tool.generate_video_with_runninghub_seedance25(
+                prompt="参考视频生成续集",
+                videos=["https://media.test/reference.mp4"],
+                duration=21,
+                ratio="9:16",
+                __user__={"id": "u1"},
+            )
+        )
+    )
+
+    args = captured["command_args"]
+    assert _arg_value(args, "--duration") == "-1"
+    assert _arg_value(args, "--ratio") == "adaptive"
+    assert payload["requested_duration"] == 21
+    assert payload["requested_ratio"] == "9:16"
+    assert payload["duration"] == -1
+    assert payload["ratio"] == "adaptive"
+    assert payload["video_parameter_normalized"] is True
+    assert bridge_calls[0]["generation_params"]["requested_duration"] == 21
+    assert bridge_calls[0]["generation_params"]["requested_ratio"] == "9:16"
+    assert bridge_calls[0]["generation_params"]["video_parameter_normalized"] is True
+    assert bridge_calls[0]["duration"] == -1
+    assert bridge_calls[0]["ratio"] == "adaptive"
+    assert captured["refresh"]["duration"] == -1
+    assert captured["refresh"]["ratio"] == "adaptive"
+
+
+def test_video_with_provider_required_parameters_is_not_marked_normalized(monkeypatch):
+    module = _load_module("test_seedance25_valid_video_parameters")
+    tool = module.Tools()
+    captured, _ = _install_common_fakes(monkeypatch, tool)
+
+    payload = json.loads(
+        asyncio.run(
+            tool.generate_video_with_runninghub_seedance25(
+                prompt="参考视频生成",
+                videos=["https://media.test/reference.mp4"],
+                duration=-1,
+                ratio="adaptive",
+                __user__={"id": "u1"},
+            )
+        )
+    )
+
+    assert _arg_value(captured["command_args"], "--duration") == "-1"
+    assert _arg_value(captured["command_args"], "--ratio") == "adaptive"
+    assert payload["requested_duration"] == -1
+    assert payload["requested_ratio"] == "adaptive"
+    assert payload["video_parameter_normalized"] is False
+
+
+def test_image_and_audio_only_multimodal_keeps_standard_defaults(monkeypatch):
+    module = _load_module("test_seedance25_non_video_multimodal_defaults")
+    tool = module.Tools()
+    captured, _ = _install_common_fakes(monkeypatch, tool)
+
+    payload = json.loads(
+        asyncio.run(
+            tool.generate_video_with_runninghub_seedance25(
+                prompt="参考图片和音频生成",
+                images=["https://media.test/reference.png"],
+                audios=["https://media.test/reference.mp3"],
+                __user__={"id": "u1"},
+            )
+        )
+    )
+
+    assert payload["mode"] == "multimodal"
+    assert _arg_value(captured["command_args"], "--duration") == "5"
+    assert _arg_value(captured["command_args"], "--ratio") == "9:16"
+    assert payload["duration"] == 5
+    assert payload["ratio"] == "9:16"
+    assert payload["video_parameter_normalized"] is False
 
 
 def test_advanced_overrides_are_forwarded(monkeypatch):
