@@ -65,27 +65,6 @@
       }
     },
     {
-      "rule_id": "R-GPTI-001",
-      "status": "active",
-      "priority": 100,
-      "intent": "gpt_image_generate_with_media_refs",
-      "trigger": {
-        "mode": "explicit_or_detected",
-        "conditions": [
-          "contains_media_references"
-        ]
-      },
-      "route": {
-        "skill": "gpt-image2-execution-skill",
-        "tool": "generate_image_with_media_assets",
-        "kb_scope": [],
-        "template_id": "",
-        "params": {
-          "model": "gpt-image-2"
-        }
-      }
-    },
-    {
       "rule_id": "R-RHS2-001",
       "status": "active",
       "priority": 100,

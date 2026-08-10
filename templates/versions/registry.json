@@ -30,20 +30,6 @@
         "version": "v1.1.6"
       }
     },
-    "gpt_image2_media": {
-      "tool": {
-        "file": "templates/gpt_image2_media_tool.py",
-        "version": "0.1.1"
-      },
-      "skill": {
-        "file": "templates/skills/gpt-image2-execution-skill/SKILL.md",
-        "version": "v1.1.6"
-      },
-      "system_prompt": {
-        "file": "templates/prompts/gpt_image2_system_prompt.txt",
-        "version": "v1.1.6"
-      }
-    },
     "runninghub_seedance2_vendor": {
       "tool": {
         "file": "templates/runninghub_seedance2_tool.py",

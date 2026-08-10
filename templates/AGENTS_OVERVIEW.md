@@ -32,19 +32,7 @@
   - `get_happyhorse_task_status`
   - `wait_happyhorse_task`
 
-## 3) GPT-Image-2 图片生成 Agent
-
-- 用途：基于 media-assets（`%素材路径`）进行图片生成，包含结果归档与任务查询。
-- System Prompt：`prompts/gpt_image2_system_prompt.txt`
-- Skill：`skills/gpt-image2-execution-skill/SKILL.md`
-- Tool：`gpt_image2_media_tool.py`
-- 关键入口函数：
-  - `generate_image_with_media_assets`
-  - `list_generation_tasks`
-  - `get_generation_task_status`
-  - `wait_generation_task`
-
-## 4) RunningHub Seedance2 视频 Agent（au vendor）
+## 3) RunningHub Seedance2 视频 Agent（au vendor）
 
 - 用途：调用 `au vendor rh-seedance2-video / rh-seedance2-mini-video / rh-seedance2-fast-video` 进行多模态视频生成，支持统一任务中心可见与状态刷新。
 - System Prompt：`prompts/runninghub_seedance2_system_prompt.txt`
@@ -56,7 +44,7 @@
   - `get_generation_task_status`
   - `wait_generation_task`
 
-## 5) RunningHub Hailuo H3 视频 Agent（au vendor）
+## 4) RunningHub Hailuo H3 视频 Agent（au vendor）
 
 - 用途：固定调用 `au vendor rh-hailuo-h3-video`，支持文生视频、显式首尾帧图生视频和多模态参考生视频。
 - System Prompt：`prompts/runninghub_hailuo_h3_system_prompt.txt`
@@ -68,7 +56,7 @@
   - `get_generation_task_status`
   - `wait_generation_task`
 
-## 6) RunningHub Seedance 2.5 视频 Agent（au vendor）
+## 5) RunningHub Seedance 2.5 视频 Agent（au vendor）
 
 - 用途：固定调用 `au vendor rh-seedance2.5-video`，支持文生视频、显式首尾帧图生视频和多模态参考生视频。
 - System Prompt：`prompts/runninghub_seedance25_system_prompt.txt`
@@ -80,7 +68,7 @@
   - `get_generation_task_status`
   - `wait_generation_task`
 
-## 7) BTN Image2 图片 Agent（au vendor）
+## 6) BTN Image2 图片 Agent（au vendor）
 
 - 用途：调用 `au vendor btn-image2-gen / btn-image2-edit`，默认 9:16 竖屏尺寸与 auto 质量，支持多图参考并写入统一任务中心。
 - 说明：该 Agent 为直接等待完成型，不提供查询方法。
@@ -91,7 +79,7 @@
   - `generate_image_with_btn_image2_gen`
   - `edit_image_with_btn_image2`
 
-## 8) 豆包图像视频描述 Agent（au vendor）
+## 7) 豆包图像视频描述 Agent（au vendor）
 
 - 用途：调用 `au vendor ve-multimodal-chat` 描述单张图片或单个视频，支持快速概述、详细分析、视频时间线、无障碍描述、提示词反推和 OCR/字幕提取。
 - 说明：每次只处理一个 `%素材路径` 或 HTTP(S) URL，不写入生成任务中心。
