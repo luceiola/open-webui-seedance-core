@@ -1,6 +1,6 @@
 {
   "version": "v1",
-  "updated_at": "2026-07-31T00:00:00+08:00",
+  "updated_at": "2026-08-10T00:00:00+08:00",
   "rules": [
     {
       "rule_id": "R-DSP-001",
@@ -132,6 +132,32 @@
           "resolution": "720p",
           "ratio": "9:16",
           "duration": 5
+        }
+      }
+    },
+    {
+      "rule_id": "R-RS25-001",
+      "status": "active",
+      "priority": 120,
+      "intent": "runninghub_seedance25_video_generate",
+      "trigger": {
+        "mode": "explicit_or_detected",
+        "conditions": [
+          "contains_video_generation_intent",
+          "contains_seedance25_intent"
+        ]
+      },
+      "route": {
+        "skill": "runninghub-seedance25-execution-skill",
+        "tool": "generate_video_with_runninghub_seedance25",
+        "kb_scope": [],
+        "template_id": "",
+        "params": {
+          "resolution": "720p",
+          "duration": 5,
+          "ratio": "9:16",
+          "generate_audio": true,
+          "real_person_mode": true
         }
       }
     },

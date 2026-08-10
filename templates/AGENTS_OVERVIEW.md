@@ -97,7 +97,19 @@
   - `get_generation_task_status`
   - `wait_generation_task`
 
-## 8) BTN Image2 图片 Agent（au vendor）
+## 8) RunningHub Seedance 2.5 视频 Agent（au vendor）
+
+- 用途：固定调用 `au vendor rh-seedance2.5-video`，支持文生视频、显式首尾帧图生视频和多模态参考生视频。
+- System Prompt：`prompts/runninghub_seedance25_system_prompt.txt`
+- Skill：`skills/runninghub-seedance25-execution-skill/SKILL.md`
+- Tool：`runninghub_seedance25_tool.py`
+- 关键入口函数：
+  - `generate_video_with_runninghub_seedance25`
+  - `list_generation_tasks`
+  - `get_generation_task_status`
+  - `wait_generation_task`
+
+## 9) BTN Image2 图片 Agent（au vendor）
 
 - 用途：调用 `au vendor btn-image2-gen / btn-image2-edit`，默认 9:16 竖屏尺寸与 auto 质量，支持多图参考并写入统一任务中心。
 - 说明：该 Agent 为直接等待完成型，不提供查询方法。

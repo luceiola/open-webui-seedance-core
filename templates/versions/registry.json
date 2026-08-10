@@ -1,6 +1,6 @@
 {
   "version": "v1.0.0",
-  "updated_at": "2026-07-31T00:00:00+08:00",
+  "updated_at": "2026-08-10T00:00:00+08:00",
   "components": {
     "seedance_material_package": {
       "tool": {
@@ -97,6 +97,20 @@
       },
       "system_prompt": {
         "file": "templates/prompts/runninghub_hailuo_h3_system_prompt.txt",
+        "version": "v1.0.0"
+      }
+    },
+    "runninghub_seedance25_vendor": {
+      "tool": {
+        "file": "templates/runninghub_seedance25_tool.py",
+        "version": "0.1.0"
+      },
+      "skill": {
+        "file": "templates/skills/runninghub-seedance25-execution-skill/SKILL.md",
+        "version": "v1.0.0"
+      },
+      "system_prompt": {
+        "file": "templates/prompts/runninghub_seedance25_system_prompt.txt",
         "version": "v1.0.0"
       }
     },
