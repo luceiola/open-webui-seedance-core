@@ -790,6 +790,57 @@ def test_unified_task_preview_uses_local_image_output_when_artifacts_are_mounted
     assert response.thumbnail_url == f'/api/v1/tasks/{task_id}/images/0'
 
 
+def test_unified_task_preview_rebases_migrated_image_output_path(tasks_router_module, tmp_path):
+    tasks_module, material_stub = tasks_router_module
+    owner_user_id = 'user-1'
+    task_id = 'task-image-migrated'
+    user_root = tmp_path / 'data' / 'cache' / 'material_packages' / owner_user_id
+    relative_image_dir = Path('task_vendor_artifacts') / 'btn_image2' / task_id / 'images'
+    migrated_image_dir = (
+        Path('/Users/lucas/srv/open-webui-seedance-prod/.data-prod/cache/material_packages')
+        / owner_user_id
+        / relative_image_dir
+    )
+    current_image_dir = user_root / relative_image_dir
+    current_image_dir.mkdir(parents=True)
+    (current_image_dir / 'image_001.png').write_bytes(b'fake-image')
+
+    async def _load_task_for_read(task_id_arg, **kwargs):
+        _ = kwargs
+        return owner_user_id, {
+            'task_id': task_id_arg,
+            'provider': 'btn_image2',
+            'status': 'SUCCEEDED',
+            'archive_status': 'NOT_REQUIRED',
+            'download_ready': False,
+            'created_at': 10,
+            'updated_at': 20,
+            'artifact_kind': 'image',
+            'image_urls': [],
+            'generation_params': {
+                'saved_image_dir': str(migrated_image_dir),
+                'image_files': "['image_001.png']",
+            },
+        }
+
+    material_stub._load_task_for_read = _load_task_for_read
+    material_stub._user_root_dir = lambda user_id: tmp_path / 'data' / 'cache' / 'material_packages' / str(user_id)
+    requester = StubUserModel(id=owner_user_id, role='user')
+
+    response = _run(tasks_module.get_unified_task_preview(task_id=task_id, refresh_status=False, user=requester))
+
+    expected_url = f'/api/v1/tasks/{task_id}/images/0'
+    assert response.image_urls == [expected_url]
+    assert response.primary_image_url == expected_url
+    assert response.thumbnail_url == expected_url
+    _, task_item = _run(_load_task_for_read(task_id))
+    assert tasks_module._build_declared_task_image_thumbnail_url(
+        task_id,
+        owner_user_id,
+        task_item,
+    ) == expected_url
+
+
 def test_unified_tasks_list_uses_declared_image_thumbnail_without_directory_scan(tasks_router_module, tmp_path):
     tasks_module, material_stub = tasks_router_module
     owner_user_id = 'user-1'

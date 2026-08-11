@@ -286,6 +286,28 @@ def _parse_string_list(value: Any) -> list[str]:
     return []
 
 
+def _relative_migrated_task_image_dir(
+    owner_user_id: str,
+    image_output_dir: Path,
+    candidate_roots: list[Path],
+) -> Optional[Path]:
+    for user_root in candidate_roots:
+        try:
+            return image_output_dir.relative_to(user_root)
+        except ValueError:
+            continue
+
+    marker = ('cache', 'material_packages', str(owner_user_id))
+    parts = image_output_dir.parts
+    for index in range(len(parts) - len(marker), -1, -1):
+        if tuple(parts[index : index + len(marker)]) != marker:
+            continue
+        relative_parts = parts[index + len(marker) :]
+        if relative_parts and relative_parts[0] == 'task_vendor_artifacts':
+            return Path(*relative_parts)
+    return None
+
+
 def _resolve_local_task_image_paths(owner_user_id: str, item: dict[str, Any]) -> list[Path]:
     generation_params = item.get('generation_params')
     if not isinstance(generation_params, dict):
@@ -326,13 +348,11 @@ def _resolve_local_task_image_paths(owner_user_id: str, item: dict[str, Any]) ->
     local_user_root = _build_user_root(getattr(material_packages_router, '_user_root_dir', None))
     artifact_user_root = _build_user_root(getattr(material_packages_router, '_task_artifact_user_root_dir', None))
     candidate_roots = [root for root in (local_user_root, artifact_user_root) if root is not None]
-    relative_output_dir: Optional[Path] = None
-    for user_root in candidate_roots:
-        try:
-            relative_output_dir = image_output_dir.relative_to(user_root)
-            break
-        except ValueError:
-            continue
+    relative_output_dir = _relative_migrated_task_image_dir(
+        owner_user_id,
+        image_output_dir,
+        candidate_roots,
+    )
     if relative_output_dir is None:
         return []
 
@@ -409,7 +429,8 @@ def _build_declared_task_image_thumbnail_url(task_id: str, owner_user_id: str, i
     try:
         image_output_dir = Path(image_output_dir_text).expanduser().resolve()
         user_root = Path(material_packages_router._user_root_dir(str(owner_user_id))).resolve()
-        image_output_dir.relative_to(user_root)
+        if _relative_migrated_task_image_dir(owner_user_id, image_output_dir, [user_root]) is None:
+            return None
     except Exception:
         return None
 
