@@ -5,15 +5,15 @@
     "seedance_material_package": {
       "tool": {
         "file": "templates/seedance_material_package_tool.py",
-        "version": "0.2.3"
+        "version": "0.2.4"
       },
       "skill": {
         "file": "templates/skills/seedance-execution-skill/SKILL.md",
-        "version": "v1.1.6"
+        "version": "v1.1.7"
       },
       "system_prompt": {
         "file": "templates/prompts/seedance_system_prompt.txt",
-        "version": "v1.1.6"
+        "version": "v1.1.7"
       }
     },
     "happyhorse_media": {

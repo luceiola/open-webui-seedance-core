@@ -1,7 +1,7 @@
 ---
 name: seedance-execution-skill
-description: Seedance 媒体素材（media-assets）专用执行规范。仅使用 %素材路径 引用，先校验后生成，默认提交即返回 task_id，不阻塞等待。
-version: v1.1.6
+description: Seedance 媒体素材（media-assets）专用执行规范。仅使用 %素材路径 引用，通过单次生成调用内置校验后提交，默认返回 task_id。
+version: v1.1.7
 routing_registry: config/seedance_routing_registry.yaml
 version_registry: templates/versions/registry.json
 ---
@@ -14,8 +14,8 @@ version_registry: templates/versions/registry.json
 
 仅支持“媒体素材模式（v1.1A）”：
 - 素材引用符号：`%素材路径`
-- 校验工具：`resolve_media_asset_references`
-- 生成工具：`generate_video_with_media_assets`
+- 生成工具：`generate_video_with_media_assets`（内部完成引用校验与任务提交）
+- 独立校验工具：`resolve_media_asset_references`（仅用于用户明确要求单独检查引用）
 
 ## 可用工具（仅这些）
 
@@ -43,19 +43,24 @@ version_registry: templates/versions/registry.json
 
 1. 先检查用户输入：
    - 若出现 `@` 或 `asset_package_id`：立即停止，并提示“当前仅支持 `%素材路径` 引用，请按该格式重试”。
-2. 调用 `resolve_media_asset_references`。
-3. 若 `missing_references` 或 `ambiguous_references` 非空：
-   - 立即停止。
-   - 返回：`missing_references`、`ambiguous_references`、`available_references`、修正指引。
-4. 校验通过后，立即调用 `generate_video_with_media_assets` 提交任务：
+2. 直接调用 `generate_video_with_media_assets`，禁止预先调用 `resolve_media_asset_references`：
    - `model`：用户指定则用用户值；否则显式传 `doubao-seedance-2-0-260128`。
    - 其他参数：仅当用户明确指定时才传，禁止擅自补默认值。
+3. `generate_video_with_media_assets` 会在同一次调用内先校验引用，仅在校验通过后提交任务。
+4. 若工具返回 `missing_references` 或 `ambiguous_references`：
+   - 立即停止。
+   - 返回：`missing_references`、`ambiguous_references`、`available_references`、修正指引。
 5. 默认只返回提交结果（`response_id/task_id`），不等待终态。
+
+## 独立引用校验
+
+仅当用户明确要求“校验/检查素材引用”且不要求生成视频时，调用 `resolve_media_asset_references`。
+生成意图存在时不得先调用该工具，避免单次 Tool 编排在校验后中断。
 
 ## 纯文本生成（无引用）
 
 当用户未使用 `%` 引用且明确希望纯文本生成时：
-1. 可直接调用 `generate_video_with_media_assets`。
+1. 直接调用 `generate_video_with_media_assets`。
 2. 不做引用缺失报错。
 3. 其余规则同“标准生成流程”。
 

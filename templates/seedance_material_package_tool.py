@@ -1,7 +1,7 @@
 """
 title: Seedance Material Package Tool
 author: local-dev
-version: 0.2.3
+version: 0.2.4
 required_open_webui_version: 0.8.0
 requirements: httpx>=0.28.1
 """
@@ -904,7 +904,8 @@ class Tools:
         __user__: dict = None,
     ) -> str:
         """
-        解析 prompt 中 `%素材路径` 引用，返回命中素材和未命中列表。
+        仅在用户明确要求单独校验素材时使用：解析 prompt 中 `%素材路径` 引用，返回命中素材和未命中列表。
+        视频生成请求不要先调用本函数，应直接调用 `generate_video_with_media_assets`，由其内部完成相同校验。
         优先按完整相对路径匹配；若只给了文件名且存在重名，返回冲突提示。
         """
         page_size = 200
@@ -1159,7 +1160,8 @@ class Tools:
         __user__: dict = None,
     ) -> str:
         """
-        使用 `%素材路径` 解析媒体素材并直接提交 Seedance 任务（不依赖素材包）。
+        视频生成请求的唯一提交入口：一次调用内先解析并校验 `%素材路径`，通过后再提交 Seedance 任务。
+        缺失或重名引用会在提交前返回错误，不依赖素材包，也无需预先调用校验工具。
         """
         model_id = model.strip() or self.valves.DEFAULT_SEEDANCE_MODEL
         if not self._is_seedance_model(model_id):
