@@ -318,3 +318,6 @@ dist
 cypress/videos
 cypress/screenshots
 .vscode/settings.json
+
+# Local browser inspection artifacts
+.playwright-cli/

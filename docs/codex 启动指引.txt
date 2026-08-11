@@ -3,7 +3,8 @@
 
 /Users/lucas/Documents/open-webui-seedance-core -> 是开发仓库, 完成后提交仓库
 /Users/lucas/srv/open-webui-seedance-dev -> 是测试环境，拉取主仓库，你可以自行启动，重启， 关闭。
-/Users/lucas/srv/open-webui-seedance-prod -> 是生产环境，dev 测试通过后，由用户确认再，拉取主仓库，由用户重启服务。
+/Users/lucas/srv/open-webui-seedance-prod -> 是老的生产环境，已不再使用
+deploy/server-operations.md 是内网服务器部署的方法，也是新生产环境
 
 
 主要开发内容
