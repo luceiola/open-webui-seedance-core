@@ -4,6 +4,29 @@
 
 > 服务器已进入生产状态。禁止再用本机 `/Users/lucas/srv/open-webui-seedance-prod/.data-prod` 覆盖服务器 `app-data`，也禁止把本机旧媒体目录整体回灌到服务器。代码从 core 发布，生产数据只在服务器维护和备份。
 
+## 环境文件隔离
+
+core 仓库使用不同环境文件，禁止交叉使用：
+
+| 场景 | 文件 | 用途 |
+| --- | --- | --- |
+| 205 生产 | `config/ark.205.env` | 服务器 Linux 路径、生产密钥和生产数据配置 |
+| 本机测试 | `config/ark.local.env` | macOS `ai-utility` 路径和本机测试配置 |
+
+`config/ark.205.env` 只作为发布输入，不能提交密钥；205 服务器上的实际文件为 `/data/openwebui-seedance-prod/config/ark.205.env`，权限应为 `0600`。本机启动必须显式指定 `ENV_FILE=config/ark.local.env`，不要让脚本回退到通用的 `config/ark.env`。
+
+其中 `AU_BIN` 和 `AU_WORKDIR` 必须与运行主机匹配：
+
+```dotenv
+# 205
+AU_BIN=/home/baize/services/ai-utility/current/.venv/bin/au
+AU_WORKDIR=/home/baize/services/ai-utility/current
+
+# local
+AU_BIN=/Users/lucas/Documents/ai-utility/.venv/bin/au
+AU_WORKDIR=/Users/lucas/Documents/ai-utility
+```
+
 ## 快速入口
 
 ### 服务信息
@@ -29,7 +52,7 @@
 | 任务目录与任务缓存 | `/data/openwebui-seedance-prod/app-data/cache` |
 | uploads | `/data/openwebui-seedance-prod/uploads` |
 | generated-artifacts | `/data/openwebui-seedance-prod/generated-artifacts` |
-| 运行配置 | `/data/openwebui-seedance-prod/config/ark.env` |
+| 运行配置 | `/data/openwebui-seedance-prod/config/ark.205.env` |
 | Key routing | `/data/openwebui-seedance-prod/config/key_routing.json` |
 | systemd 源文件 | `/data/openwebui-seedance-prod/config/openwebui-seedance-prod.service` |
 | 数据库迁移备份 | `/data/openwebui-seedance-prod/app-data/webui.db.before-path-migration-20260811-1836` |
@@ -116,7 +139,7 @@ ssh baize@10.104.14.205 "cd /home/baize/workspace/openwebui-seedance-prod && tes
 ```
 
 ```bash
-ssh baize@10.104.14.205 'source /home/baize/miniconda3/etc/profile.d/conda.sh; conda activate openwebui-seedance-prod; cd /home/baize/workspace/openwebui-seedance-prod; ENV_FILE=/data/openwebui-seedance-prod/config/ark.env DATA_DIR=/data/openwebui-seedance-prod/app-data bash scripts/seedance/preflight.sh --auto-fix'
+ssh baize@10.104.14.205 'source /home/baize/miniconda3/etc/profile.d/conda.sh; conda activate openwebui-seedance-prod; cd /home/baize/workspace/openwebui-seedance-prod; ENV_FILE=/data/openwebui-seedance-prod/config/ark.205.env DATA_DIR=/data/openwebui-seedance-prod/app-data bash scripts/seedance/preflight.sh --auto-fix'
 ```
 
 看到 preflight 成功后再进入重启窗口。目标机首次或冷启动通常需要约两分钟。
@@ -133,11 +156,34 @@ ssh -t baize@10.104.14.205 'sudo systemctl restart openwebui-seedance-prod.servi
 
 ### 状态、日志和端口
 
+OpenWebUI 由 `systemd` 常驻管理，服务的标准输出和错误输出统一进入
+`journalctl`。查看实时控制台输出时，使用下面的 `-f` 命令；按 `Ctrl-C`
+只会退出日志跟踪，不会停止服务。
+
 ```bash
+# 服务状态
 ssh baize@10.104.14.205 'systemctl status openwebui-seedance-prod.service --no-pager -l'
+
+# 最近 160 行日志
 ssh baize@10.104.14.205 'journalctl -u openwebui-seedance-prod.service -n 160 --no-pager'
+
+# 实时跟踪控制台输出
 ssh -t baize@10.104.14.205 'journalctl -u openwebui-seedance-prod.service -f'
+
+# 查看今天以来的日志
+ssh baize@10.104.14.205 'journalctl -u openwebui-seedance-prod.service --since today --no-pager'
+
+# 状态、主进程信息和最近日志一起查看
+ssh baize@10.104.14.205 'systemctl show openwebui-seedance-prod.service -p MainPID -p NRestarts -p ActiveState -p SubState --no-pager; journalctl -u openwebui-seedance-prod.service -n 80 --no-pager'
+
+# 8801 监听端口
 ssh baize@10.104.14.205 'ss -ltnp "sport = :8801"; lsof -nP -iTCP:8801 -sTCP:LISTEN'
+```
+
+如果远程账号没有读取 systemd 日志的权限，在对应命令前加 `sudo`，例如：
+
+```bash
+ssh -t baize@10.104.14.205 'sudo journalctl -u openwebui-seedance-prod.service -f'
 ```
 
 ### 重启、停止和启动
@@ -248,10 +294,10 @@ ssh baize@10.104.14.205 'find /data/openwebui-seedance-prod/uploads -type f | wc
 只能查看变量名和文件权限，不在终端、日志、文档或截图中输出密钥值：
 
 ```bash
-ssh baize@10.104.14.205 'stat -c "%a %U:%G %n" /data/openwebui-seedance-prod/config/ark.env /data/openwebui-seedance-prod/config/key_routing.json /home/baize/workspace/openwebui-seedance-prod/.webui_secret_key; sed -n "s/^\([A-Z0-9_]*\)=.*/\1/p" /data/openwebui-seedance-prod/config/ark.env | sort'
+ssh baize@10.104.14.205 'stat -c "%a %U:%G %n" /data/openwebui-seedance-prod/config/ark.205.env /data/openwebui-seedance-prod/config/key_routing.json /home/baize/workspace/openwebui-seedance-prod/.webui_secret_key; sed -n "s/^\([A-Z0-9_]*\)=.*/\1/p" /data/openwebui-seedance-prod/config/ark.205.env | sort'
 ```
 
-`ark.env` 和 `.webui_secret_key` 权限应为 `0600`。不要旋转 `.webui_secret_key` 作为普通排障步骤；这会影响已有登录令牌，并可能影响依赖该密钥的数据。
+`ark.205.env` 和 `.webui_secret_key` 权限应为 `0600`。不要旋转 `.webui_secret_key` 作为普通排障步骤；这会影响已有登录令牌，并可能影响依赖该密钥的数据。
 
 ### systemd 配置
 
@@ -262,8 +308,8 @@ ssh baize@10.104.14.205 'systemctl cat openwebui-seedance-prod.service'
 unit 应同时包含：
 
 ```ini
-EnvironmentFile=/data/openwebui-seedance-prod/config/ark.env
-Environment=ENV_FILE=/data/openwebui-seedance-prod/config/ark.env
+EnvironmentFile=/data/openwebui-seedance-prod/config/ark.205.env
+Environment=ENV_FILE=/data/openwebui-seedance-prod/config/ark.205.env
 ```
 
 只配置 `EnvironmentFile` 时变量仍会注入，但启动脚本会打印 env 文件路径警告。修改 unit 后执行：

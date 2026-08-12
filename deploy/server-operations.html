@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta name="source-sha256" content="91337bcbd4cd1015692baee34d7eb7aad2a2ff8955c7d31626eb40fb2158686f" />
+  <meta name="source-sha256" content="039841b81b10a02d05a371f789f5e2e26913dc353d1e46745d59df65c5ee4dc8" />
   <link rel="icon" href="data:," />
   <title>Open-WebUI Seedance 服务器运维手册</title>
   <style>
@@ -68,19 +68,33 @@
     <aside class="sidebar">
       <a class="brand" href="#">Open-WebUI Seedance<small>服务器运维手册</small></a>
       <input class="search" type="search" placeholder="搜索命令或故障..." aria-label="搜索手册" />
-      <nav aria-label="章节目录"><a class="toc-level-2" href="#快速入口">快速入口</a><a class="toc-level-3" href="#服务信息">服务信息</a><a class="toc-level-3" href="#关键路径">关键路径</a><a class="toc-level-2" href="#日常状态检查">日常状态检查</a><a class="toc-level-3" href="#一键检查">一键检查</a><a class="toc-level-3" href="#从-mac-检查入口">从 Mac 检查入口</a><a class="toc-level-2" href="#日常发布">日常发布</a><a class="toc-level-3" href="#发布原则">发布原则</a><a class="toc-level-3" href="#在-core-准备-release">在 core 准备 release</a><a class="toc-level-3" href="#上传配套-build">上传配套 build</a><a class="toc-level-3" href="#目标机准备代码">目标机准备代码</a><a class="toc-level-3" href="#激活-release">激活 release</a><a class="toc-level-2" href="#服务操作">服务操作</a><a class="toc-level-3" href="#状态-日志和端口">状态、日志和端口</a><a class="toc-level-3" href="#重启-停止和启动">重启、停止和启动</a><a class="toc-level-2" href="#任务与生成结果">任务与生成结果</a><a class="toc-level-3" href="#查看活跃任务">查看活跃任务</a><a class="toc-level-3" href="#卡住任务处理原则">卡住任务处理原则</a><a class="toc-level-3" href="#tapque-image-历史路径">Tapque Image 历史路径</a><a class="toc-level-2" href="#sqlite-与备份">SQLite 与备份</a><a class="toc-level-3" href="#数据所有权">数据所有权</a><a class="toc-level-3" href="#主数据库完整性">主数据库完整性</a><a class="toc-level-3" href="#一致性备份">一致性备份</a><a class="toc-level-3" href="#数据库路径检查">数据库路径检查</a><a class="toc-level-2" href="#媒体与磁盘">媒体与磁盘</a><a class="toc-level-3" href="#存储检查">存储检查</a><a class="toc-level-3" href="#迁移后的同步边界">迁移后的同步边界</a><a class="toc-level-2" href="#配置-密钥与代理">配置、密钥与代理</a><a class="toc-level-3" href="#配置检查">配置检查</a><a class="toc-level-3" href="#systemd-配置">systemd 配置</a><a class="toc-level-3" href="#github-与代理">GitHub 与代理</a><a class="toc-level-2" href="#回滚">回滚</a><a class="toc-level-3" href="#代码回滚">代码回滚</a><a class="toc-level-3" href="#数据回滚边界">数据回滚边界</a><a class="toc-level-2" href="#常见故障">常见故障</a><a class="toc-level-3" href="#systemd-active-但-8801-connection-refused">systemd active 但 8801 connection refused</a><a class="toc-level-3" href="#页面还是旧版本">页面还是旧版本</a><a class="toc-level-3" href="#历史图片或视频不显示">历史图片或视频不显示</a><a class="toc-level-3" href="#database-is-locked-或-sqlite-错误">database is locked 或 SQLite 错误</a><a class="toc-level-3" href="#服务重启循环">服务重启循环</a><a class="toc-level-2" href="#安全与变更纪律">安全与变更纪律</a><a class="toc-level-2" href="#发布验收清单">发布验收清单</a><a class="toc-level-2" href="#文档维护">文档维护</a></nav>
-      <div class="sidebar-foot">Markdown 单一来源<br />SHA-256: 91337bcbd4cd</div>
+      <nav aria-label="章节目录"><a class="toc-level-2" href="#环境文件隔离">环境文件隔离</a><a class="toc-level-2" href="#快速入口">快速入口</a><a class="toc-level-3" href="#服务信息">服务信息</a><a class="toc-level-3" href="#关键路径">关键路径</a><a class="toc-level-2" href="#日常状态检查">日常状态检查</a><a class="toc-level-3" href="#一键检查">一键检查</a><a class="toc-level-3" href="#从-mac-检查入口">从 Mac 检查入口</a><a class="toc-level-2" href="#日常发布">日常发布</a><a class="toc-level-3" href="#发布原则">发布原则</a><a class="toc-level-3" href="#在-core-准备-release">在 core 准备 release</a><a class="toc-level-3" href="#上传配套-build">上传配套 build</a><a class="toc-level-3" href="#目标机准备代码">目标机准备代码</a><a class="toc-level-3" href="#激活-release">激活 release</a><a class="toc-level-2" href="#服务操作">服务操作</a><a class="toc-level-3" href="#状态-日志和端口">状态、日志和端口</a><a class="toc-level-3" href="#重启-停止和启动">重启、停止和启动</a><a class="toc-level-2" href="#任务与生成结果">任务与生成结果</a><a class="toc-level-3" href="#查看活跃任务">查看活跃任务</a><a class="toc-level-3" href="#卡住任务处理原则">卡住任务处理原则</a><a class="toc-level-3" href="#tapque-image-历史路径">Tapque Image 历史路径</a><a class="toc-level-2" href="#sqlite-与备份">SQLite 与备份</a><a class="toc-level-3" href="#数据所有权">数据所有权</a><a class="toc-level-3" href="#主数据库完整性">主数据库完整性</a><a class="toc-level-3" href="#一致性备份">一致性备份</a><a class="toc-level-3" href="#数据库路径检查">数据库路径检查</a><a class="toc-level-2" href="#媒体与磁盘">媒体与磁盘</a><a class="toc-level-3" href="#存储检查">存储检查</a><a class="toc-level-3" href="#迁移后的同步边界">迁移后的同步边界</a><a class="toc-level-2" href="#配置-密钥与代理">配置、密钥与代理</a><a class="toc-level-3" href="#配置检查">配置检查</a><a class="toc-level-3" href="#systemd-配置">systemd 配置</a><a class="toc-level-3" href="#github-与代理">GitHub 与代理</a><a class="toc-level-2" href="#回滚">回滚</a><a class="toc-level-3" href="#代码回滚">代码回滚</a><a class="toc-level-3" href="#数据回滚边界">数据回滚边界</a><a class="toc-level-2" href="#常见故障">常见故障</a><a class="toc-level-3" href="#systemd-active-但-8801-connection-refused">systemd active 但 8801 connection refused</a><a class="toc-level-3" href="#页面还是旧版本">页面还是旧版本</a><a class="toc-level-3" href="#历史图片或视频不显示">历史图片或视频不显示</a><a class="toc-level-3" href="#database-is-locked-或-sqlite-错误">database is locked 或 SQLite 错误</a><a class="toc-level-3" href="#服务重启循环">服务重启循环</a><a class="toc-level-2" href="#安全与变更纪律">安全与变更纪律</a><a class="toc-level-2" href="#发布验收清单">发布验收清单</a><a class="toc-level-2" href="#文档维护">文档维护</a></nav>
+      <div class="sidebar-foot">Markdown 单一来源<br />SHA-256: 039841b81b10</div>
     </aside>
     <main><header class="doc-head"><p class="eyebrow">OPEN-WEBUI SEEDANCE / INTERNAL OPS</p><h1 id="open-webui-seedance-服务器运维手册">Open-WebUI Seedance 服务器运维手册</h1><p class="doc-meta">目标服务器 <code>baize@10.104.14.205</code> · Ubuntu · systemd · SQLite</p></header>
 <p>本文档用于维护部署在内网服务器 <code>10.104.14.205:8801</code> 的 Open-WebUI Seedance 生产服务。Mac 上的 core 仓库是唯一代码开发源；服务器保存生产数据库、任务记录、上传文件和生成产物，并只运行已经提交和标记的 Git 版本。</p>
 <aside class="callout">服务器已进入生产状态。禁止再用本机 <code>/Users/lucas/srv/open-webui-seedance-prod/.data-prod</code> 覆盖服务器 <code>app-data</code>，也禁止把本机旧媒体目录整体回灌到服务器。代码从 core 发布，生产数据只在服务器维护和备份。</aside>
+<section class="manual-section" data-search-section id="section-环境文件隔离">
+<h2 id="环境文件隔离">环境文件隔离</h2>
+<p>core 仓库使用不同环境文件，禁止交叉使用：</p>
+<div class="table-wrap"><table><thead><tr><th>场景</th><th>文件</th><th>用途</th></tr></thead><tbody><tr><td>205 生产</td><td><code>config/ark.205.env</code></td><td>服务器 Linux 路径、生产密钥和生产数据配置</td></tr><tr><td>本机测试</td><td><code>config/ark.local.env</code></td><td>macOS <code>ai-utility</code> 路径和本机测试配置</td></tr></tbody></table></div>
+<p><code>config/ark.205.env</code> 只作为发布输入，不能提交密钥；205 服务器上的实际文件为 <code>/data/openwebui-seedance-prod/config/ark.205.env</code>，权限应为 <code>0600</code>。本机启动必须显式指定 <code>ENV_FILE=config/ark.local.env</code>，不要让脚本回退到通用的 <code>config/ark.env</code>。</p>
+<p>其中 <code>AU_BIN</code> 和 <code>AU_WORKDIR</code> 必须与运行主机匹配：</p>
+<div class="code-block"><button class="copy" type="button">Copy</button><pre><code class="language-dotenv"># 205
+AU_BIN=/home/baize/services/ai-utility/current/.venv/bin/au
+AU_WORKDIR=/home/baize/services/ai-utility/current
+
+# local
+AU_BIN=/Users/lucas/Documents/ai-utility/.venv/bin/au
+AU_WORKDIR=/Users/lucas/Documents/ai-utility</code></pre></div>
+</section>
 <section class="manual-section" data-search-section id="section-快速入口">
 <h2 id="快速入口">快速入口</h2>
 <h3 id="服务信息">服务信息</h3>
 <div class="table-wrap"><table><thead><tr><th>项目</th><th>当前值</th></tr></thead><tbody><tr><td>生产地址</td><td><code>http://10.104.14.205:8801</code></td></tr><tr><td>SSH</td><td><code>baize@10.104.14.205</code></td></tr><tr><td>systemd</td><td><code>openwebui-seedance-prod.service</code></td></tr><tr><td>当前生产基线</td><td><code>dbf59c023</code></td></tr><tr><td>Python 环境</td><td><code>/home/baize/miniconda3/envs/openwebui-seedance-prod</code></td></tr><tr><td>目标工作区</td><td><code>/home/baize/workspace/openwebui-seedance-prod</code></td></tr><tr><td>内网 bare Git</td><td><code>/home/baize/git/open-webui-seedance-prod.git</code></td></tr></tbody></table></div>
 <p>本机旧 prod 的 <code>8801</code> 已停用，只保留历史 Git 与数据快照，不作为业务回退入口，也不得重新写回服务器生产数据。</p>
 <h3 id="关键路径">关键路径</h3>
-<div class="table-wrap"><table><thead><tr><th>用途</th><th>服务器路径</th></tr></thead><tbody><tr><td>应用数据与主数据库</td><td><code>/data/openwebui-seedance-prod/app-data</code></td></tr><tr><td>主数据库</td><td><code>/data/openwebui-seedance-prod/app-data/webui.db</code></td></tr><tr><td>任务目录与任务缓存</td><td><code>/data/openwebui-seedance-prod/app-data/cache</code></td></tr><tr><td>uploads</td><td><code>/data/openwebui-seedance-prod/uploads</code></td></tr><tr><td>generated-artifacts</td><td><code>/data/openwebui-seedance-prod/generated-artifacts</code></td></tr><tr><td>运行配置</td><td><code>/data/openwebui-seedance-prod/config/ark.env</code></td></tr><tr><td>Key routing</td><td><code>/data/openwebui-seedance-prod/config/key_routing.json</code></td></tr><tr><td>systemd 源文件</td><td><code>/data/openwebui-seedance-prod/config/openwebui-seedance-prod.service</code></td></tr><tr><td>数据库迁移备份</td><td><code>/data/openwebui-seedance-prod/app-data/webui.db.before-path-migration-20260811-1836</code></td></tr><tr><td>迁移日志</td><td><code>/data/openwebui-seedance-prod/migration-logs</code></td></tr><tr><td>release build 归档</td><td><code>/data/openwebui-seedance-prod/release-builds</code></td></tr></tbody></table></div>
+<div class="table-wrap"><table><thead><tr><th>用途</th><th>服务器路径</th></tr></thead><tbody><tr><td>应用数据与主数据库</td><td><code>/data/openwebui-seedance-prod/app-data</code></td></tr><tr><td>主数据库</td><td><code>/data/openwebui-seedance-prod/app-data/webui.db</code></td></tr><tr><td>任务目录与任务缓存</td><td><code>/data/openwebui-seedance-prod/app-data/cache</code></td></tr><tr><td>uploads</td><td><code>/data/openwebui-seedance-prod/uploads</code></td></tr><tr><td>generated-artifacts</td><td><code>/data/openwebui-seedance-prod/generated-artifacts</code></td></tr><tr><td>运行配置</td><td><code>/data/openwebui-seedance-prod/config/ark.205.env</code></td></tr><tr><td>Key routing</td><td><code>/data/openwebui-seedance-prod/config/key_routing.json</code></td></tr><tr><td>systemd 源文件</td><td><code>/data/openwebui-seedance-prod/config/openwebui-seedance-prod.service</code></td></tr><tr><td>数据库迁移备份</td><td><code>/data/openwebui-seedance-prod/app-data/webui.db.before-path-migration-20260811-1836</code></td></tr><tr><td>迁移日志</td><td><code>/data/openwebui-seedance-prod/migration-logs</code></td></tr><tr><td>release build 归档</td><td><code>/data/openwebui-seedance-prod/release-builds</code></td></tr></tbody></table></div>
 </section>
 <section class="manual-section" data-search-section id="section-日常状态检查">
 <h2 id="日常状态检查">日常状态检查</h2>
@@ -121,7 +135,7 @@ git push --atomic server-prod HEAD:refs/heads/main &quot;$RELEASE_TAG&quot;</cod
 <div class="code-block"><button class="copy" type="button">Copy</button><pre><code class="language-bash">rsync -a --delete build/ &quot;baize@10.104.14.205:/data/openwebui-seedance-prod/release-builds/${RELEASE_TAG}/build/&quot;</code></pre></div>
 <h3 id="目标机准备代码">目标机准备代码</h3>
 <div class="code-block"><button class="copy" type="button">Copy</button><pre><code class="language-bash">ssh baize@10.104.14.205 &quot;cd /home/baize/workspace/openwebui-seedance-prod &amp;&amp; test -z \&quot;\$(git status --porcelain)\&quot; &amp;&amp; git fetch origin --prune --tags &amp;&amp; git rev-parse --verify &#x27;${RELEASE_TAG}^{commit}&#x27; &amp;&amp; git checkout --detach &#x27;${RELEASE_TAG}&#x27; &amp;&amp; rsync -a --delete &#x27;/data/openwebui-seedance-prod/release-builds/${RELEASE_TAG}/build/&#x27; &#x27;/home/baize/workspace/openwebui-seedance-prod/build/&#x27;&quot;</code></pre></div>
-<div class="code-block"><button class="copy" type="button">Copy</button><pre><code class="language-bash">ssh baize@10.104.14.205 &#x27;source /home/baize/miniconda3/etc/profile.d/conda.sh; conda activate openwebui-seedance-prod; cd /home/baize/workspace/openwebui-seedance-prod; ENV_FILE=/data/openwebui-seedance-prod/config/ark.env DATA_DIR=/data/openwebui-seedance-prod/app-data bash scripts/seedance/preflight.sh --auto-fix&#x27;</code></pre></div>
+<div class="code-block"><button class="copy" type="button">Copy</button><pre><code class="language-bash">ssh baize@10.104.14.205 &#x27;source /home/baize/miniconda3/etc/profile.d/conda.sh; conda activate openwebui-seedance-prod; cd /home/baize/workspace/openwebui-seedance-prod; ENV_FILE=/data/openwebui-seedance-prod/config/ark.205.env DATA_DIR=/data/openwebui-seedance-prod/app-data bash scripts/seedance/preflight.sh --auto-fix&#x27;</code></pre></div>
 <p>看到 preflight 成功后再进入重启窗口。目标机首次或冷启动通常需要约两分钟。</p>
 <h3 id="激活-release">激活 release</h3>
 <div class="code-block"><button class="copy" type="button">Copy</button><pre><code class="language-bash">ssh -t baize@10.104.14.205 &#x27;sudo systemctl restart openwebui-seedance-prod.service; for attempt in $(seq 1 180); do if curl --noproxy &quot;*&quot; -fsS --max-time 2 http://127.0.0.1:8801/health; then echo; exit 0; fi; sleep 1; done; journalctl -u openwebui-seedance-prod.service -n 160 --no-pager; exit 1&#x27;</code></pre></div>
@@ -130,10 +144,26 @@ git push --atomic server-prod HEAD:refs/heads/main &quot;$RELEASE_TAG&quot;</cod
 <section class="manual-section" data-search-section id="section-服务操作">
 <h2 id="服务操作">服务操作</h2>
 <h3 id="状态-日志和端口">状态、日志和端口</h3>
-<div class="code-block"><button class="copy" type="button">Copy</button><pre><code class="language-bash">ssh baize@10.104.14.205 &#x27;systemctl status openwebui-seedance-prod.service --no-pager -l&#x27;
+<p>OpenWebUI 由 <code>systemd</code> 常驻管理，服务的标准输出和错误输出统一进入 <code>journalctl</code>。查看实时控制台输出时，使用下面的 <code>-f</code> 命令；按 <code>Ctrl-C</code> 只会退出日志跟踪，不会停止服务。</p>
+<div class="code-block"><button class="copy" type="button">Copy</button><pre><code class="language-bash"># 服务状态
+ssh baize@10.104.14.205 &#x27;systemctl status openwebui-seedance-prod.service --no-pager -l&#x27;
+
+# 最近 160 行日志
 ssh baize@10.104.14.205 &#x27;journalctl -u openwebui-seedance-prod.service -n 160 --no-pager&#x27;
+
+# 实时跟踪控制台输出
 ssh -t baize@10.104.14.205 &#x27;journalctl -u openwebui-seedance-prod.service -f&#x27;
+
+# 查看今天以来的日志
+ssh baize@10.104.14.205 &#x27;journalctl -u openwebui-seedance-prod.service --since today --no-pager&#x27;
+
+# 状态、主进程信息和最近日志一起查看
+ssh baize@10.104.14.205 &#x27;systemctl show openwebui-seedance-prod.service -p MainPID -p NRestarts -p ActiveState -p SubState --no-pager; journalctl -u openwebui-seedance-prod.service -n 80 --no-pager&#x27;
+
+# 8801 监听端口
 ssh baize@10.104.14.205 &#x27;ss -ltnp &quot;sport = :8801&quot;; lsof -nP -iTCP:8801 -sTCP:LISTEN&#x27;</code></pre></div>
+<p>如果远程账号没有读取 systemd 日志的权限，在对应命令前加 <code>sudo</code>，例如：</p>
+<div class="code-block"><button class="copy" type="button">Copy</button><pre><code class="language-bash">ssh -t baize@10.104.14.205 &#x27;sudo journalctl -u openwebui-seedance-prod.service -f&#x27;</code></pre></div>
 <h3 id="重启-停止和启动">重启、停止和启动</h3>
 <div class="code-block"><button class="copy" type="button">Copy</button><pre><code class="language-bash">ssh -t baize@10.104.14.205 &#x27;sudo systemctl restart openwebui-seedance-prod.service&#x27;
 ssh -t baize@10.104.14.205 &#x27;sudo systemctl stop openwebui-seedance-prod.service&#x27;
@@ -183,13 +213,13 @@ ssh baize@10.104.14.205 &#x27;find /data/openwebui-seedance-prod/uploads -type f
 <h2 id="配置-密钥与代理">配置、密钥与代理</h2>
 <h3 id="配置检查">配置检查</h3>
 <p>只能查看变量名和文件权限，不在终端、日志、文档或截图中输出密钥值：</p>
-<div class="code-block"><button class="copy" type="button">Copy</button><pre><code class="language-bash">ssh baize@10.104.14.205 &#x27;stat -c &quot;%a %U:%G %n&quot; /data/openwebui-seedance-prod/config/ark.env /data/openwebui-seedance-prod/config/key_routing.json /home/baize/workspace/openwebui-seedance-prod/.webui_secret_key; sed -n &quot;s/^\([A-Z0-9_]*\)=.*/\1/p&quot; /data/openwebui-seedance-prod/config/ark.env | sort&#x27;</code></pre></div>
-<p><code>ark.env</code> 和 <code>.webui_secret_key</code> 权限应为 <code>0600</code>。不要旋转 <code>.webui_secret_key</code> 作为普通排障步骤；这会影响已有登录令牌，并可能影响依赖该密钥的数据。</p>
+<div class="code-block"><button class="copy" type="button">Copy</button><pre><code class="language-bash">ssh baize@10.104.14.205 &#x27;stat -c &quot;%a %U:%G %n&quot; /data/openwebui-seedance-prod/config/ark.205.env /data/openwebui-seedance-prod/config/key_routing.json /home/baize/workspace/openwebui-seedance-prod/.webui_secret_key; sed -n &quot;s/^\([A-Z0-9_]*\)=.*/\1/p&quot; /data/openwebui-seedance-prod/config/ark.205.env | sort&#x27;</code></pre></div>
+<p><code>ark.205.env</code> 和 <code>.webui_secret_key</code> 权限应为 <code>0600</code>。不要旋转 <code>.webui_secret_key</code> 作为普通排障步骤；这会影响已有登录令牌，并可能影响依赖该密钥的数据。</p>
 <h3 id="systemd-配置">systemd 配置</h3>
 <div class="code-block"><button class="copy" type="button">Copy</button><pre><code class="language-bash">ssh baize@10.104.14.205 &#x27;systemctl cat openwebui-seedance-prod.service&#x27;</code></pre></div>
 <p>unit 应同时包含：</p>
-<div class="code-block"><button class="copy" type="button">Copy</button><pre><code class="language-ini">EnvironmentFile=/data/openwebui-seedance-prod/config/ark.env
-Environment=ENV_FILE=/data/openwebui-seedance-prod/config/ark.env</code></pre></div>
+<div class="code-block"><button class="copy" type="button">Copy</button><pre><code class="language-ini">EnvironmentFile=/data/openwebui-seedance-prod/config/ark.205.env
+Environment=ENV_FILE=/data/openwebui-seedance-prod/config/ark.205.env</code></pre></div>
 <p>只配置 <code>EnvironmentFile</code> 时变量仍会注入，但启动脚本会打印 env 文件路径警告。修改 unit 后执行：</p>
 <div class="code-block"><button class="copy" type="button">Copy</button><pre><code class="language-bash">ssh -t baize@10.104.14.205 &#x27;sudo cp /data/openwebui-seedance-prod/config/openwebui-seedance-prod.service /etc/systemd/system/openwebui-seedance-prod.service; sudo systemctl daemon-reload; sudo systemctl restart openwebui-seedance-prod.service&#x27;</code></pre></div>
 <h3 id="github-与代理">GitHub 与代理</h3>

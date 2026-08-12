@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Optional
@@ -58,6 +59,13 @@ class Tools(_Seedance2Tools):
     generate_video_with_runninghub_seedance2 = None
 
     class Valves(_Seedance2Tools.Valves):
+        # Keep the inherited vendor runner explicit for the Linux production host.
+        AU_BIN: str = Field(
+            default=os.getenv("AU_BIN", "/Users/lucas/Documents/ai-utility/.venv/bin/au")
+        )
+        AU_WORKDIR: str = Field(
+            default=os.getenv("AU_WORKDIR", "/Users/lucas/Documents/ai-utility")
+        )
         DEFAULT_RESOLUTION: str = Field(default="2K")
         DEFAULT_RATIO: str = Field(default="9:16")
         DEFAULT_DURATION_SECONDS: int = Field(default=5, ge=5, le=15)

@@ -126,11 +126,11 @@ class Tools:
             description="Optional OpenWebUI API key fallback when request context has no auth.",
         )
         AU_BIN: str = Field(
-            default="/Users/lucas/Documents/ai-utility/.venv/bin/au",
+            default=os.getenv("AU_BIN", "/Users/lucas/Documents/ai-utility/.venv/bin/au"),
             description="Absolute path to au executable.",
         )
         AU_WORKDIR: str = Field(
-            default="/Users/lucas/Documents/ai-utility",
+            default=os.getenv("AU_WORKDIR", "/Users/lucas/Documents/ai-utility"),
             description="Working directory for au vendor commands.",
         )
         AU_API_KEY_ENV: str = Field(
