@@ -321,3 +321,5 @@ cypress/screenshots
 
 # Local browser inspection artifacts
 .playwright-cli/
+config/ark.205.env
+config/ark.local.env
