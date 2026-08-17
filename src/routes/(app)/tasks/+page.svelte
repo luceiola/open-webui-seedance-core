@@ -639,14 +639,12 @@
 	<div class="flex-1 overflow-y-auto px-3 pb-4">
 		<div class="sticky top-0 z-10 bg-gray-50/85 dark:bg-gray-950/85 backdrop-blur-sm pt-2 pb-3">
 			<div class="task-filter-grid">
-				{#if isAdmin()}
-					<select class="task-select" bind:value={selectedUserId}>
-						<option value="">全部用户</option>
-						{#each taskUsers as item (item.user_id)}
-							<option value={item.user_id}>{item.user_name}</option>
-						{/each}
-					</select>
-				{/if}
+				<select class="task-select" bind:value={selectedUserId}>
+					<option value="">全部用户</option>
+					{#each taskUsers as item (item.user_id)}
+						<option value={item.user_id}>{item.user_name}</option>
+					{/each}
+				</select>
 
 				<select class="task-select" bind:value={selectedGroupId}>
 					<option value="">全部用户组</option>

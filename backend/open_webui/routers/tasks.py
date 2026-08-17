@@ -162,8 +162,6 @@ async def _load_task_for_request(
         refresh_status=refresh_status,
         refresh_min_interval_seconds=refresh_min_interval_seconds,
     )
-    if not _is_admin(user) and str(owner_user_id) != str(user.id):
-        raise HTTPException(status_code=404, detail='Task not found')
     return owner_user_id, item
 
 
@@ -1542,8 +1540,6 @@ async def list_unified_tasks(
 
     is_admin = _is_admin(user)
     desired_user = (user_id or '').strip() if user_id else None
-    if not is_admin:
-        desired_user = str(user.id)
     desired_deletion_status = _requested_deletion_status(
         deletion_status,
         include_deleted=include_deleted if is_admin else False,
@@ -1687,19 +1683,10 @@ async def list_unified_task_users(
     include_deleted: bool = Query(default=False),
     user: UserModel = Depends(get_verified_user),
 ):
-    if not _is_admin(user):
-        owner_user_id = str(user.id)
-        owner_user_name = str(
-            getattr(user, 'name', None)
-            or getattr(user, 'username', None)
-            or owner_user_id
-        )
-        return UnifiedTaskUsersResponse(
-            users=[UnifiedTaskUserItem(user_id=owner_user_id, user_name=owner_user_name)]
-        )
     material_packages_router._cleanup_expired_soft_deleted_records()
 
     material_packages_router.ensure_task_catalog()
+    include_deleted = include_deleted and _is_admin(user)
     user_name_cache: dict[str, str] = {}
     rows: list[UnifiedTaskUserItem] = []
 
@@ -1760,8 +1747,6 @@ async def list_unified_task_providers(
     material_packages_router.ensure_task_catalog()
 
     desired_user = (user_id or '').strip() if user_id else None
-    if not is_admin:
-        desired_user = str(user.id)
     seen: set[str] = set()
 
     catalog_query = dict(
