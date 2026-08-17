@@ -169,7 +169,7 @@ def _build_tasks_router_fixture():
             return sorted({owner_user_id for owner_user_id, item in self._rows() if include_deleted or not material_module._is_soft_deleted(item)})
 
         def query(self, *, user_id=None, owner_ids=None, provider=None, skill_name=None, tool_name=None, status=None, model=None,
-                  start_at=None, end_at=None, include_deleted=False, offset=0, limit=48):
+                  start_at=None, end_at=None, include_deleted=False, deletion_status=None, offset=0, limit=48):
             aliases = {'SUBMITTED': 'PENDING', 'QUEUED': 'PENDING', 'IN_PROGRESS': 'RUNNING', 'SUCCESS': 'SUCCEEDED', 'COMPLETED': 'SUCCEEDED', 'ERROR': 'FAILED'}
             rows = []
             for owner_user_id, item in self._rows():
@@ -177,7 +177,10 @@ def _build_tasks_router_fixture():
                     continue
                 if owner_ids is not None and owner_user_id not in owner_ids:
                     continue
-                if not include_deleted and material_module._is_soft_deleted(item):
+                is_deleted = material_module._is_soft_deleted(item)
+                if deletion_status == 'deleted' and not is_deleted:
+                    continue
+                if (deletion_status == 'active' or not include_deleted) and is_deleted:
                     continue
                 if provider and str(item.get('provider') or 'ark').lower() != provider:
                     continue
@@ -380,6 +383,21 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def test_soft_delete_cleanup_retains_records_and_artifacts(material_packages_router_module, tmp_path):
+    record_path = tmp_path / 'task.json'
+    video_path = tmp_path / 'task.mp4'
+    thumbnail_path = tmp_path / 'task.jpg'
+    record_path.write_text('{"deleted_at": 1}', encoding='utf-8')
+    video_path.write_bytes(b'video')
+    thumbnail_path.write_bytes(b'image')
+
+    material_packages_router_module._cleanup_expired_soft_deleted_records()
+
+    assert record_path.exists()
+    assert video_path.exists()
+    assert thumbnail_path.exists()
+
+
 def _set_key_routing_config(material_module, config_path: Path):
     material_module.KEY_ROUTING_CONFIG_PATH = config_path.resolve()
     material_module._KEY_ROUTING_CACHE_PATH = None
@@ -455,6 +473,102 @@ def test_unified_tasks_list_contract_and_unknown_status_filter(tasks_router_modu
     assert response.items[0].provider == 'happyhorse'
     # UNKNOWN filter includes non-standard raw statuses; normalized output remains RUNNING.
     assert response.items[0].status == 'RUNNING'
+
+
+def test_admin_can_filter_only_deleted_tasks(tasks_router_module):
+    tasks_module, material_stub = tasks_router_module
+    task_records = {
+        'task-active': {'task_id': 'task-active', 'user_name': 'Alice', 'created_at': 2, 'updated_at': 2},
+        'task-deleted': {'task_id': 'task-deleted', 'user_name': 'Bob', 'deleted_at': 10, 'created_at': 1, 'updated_at': 10},
+    }
+    material_stub._iter_task_record_paths = lambda: [
+        ('user-1', Path('/tmp/task-active.json')),
+        ('user-2', Path('/tmp/task-deleted.json')),
+    ]
+    material_stub._load_task_record_from_path = lambda path: dict(task_records[path.stem])
+    material_stub._is_soft_deleted = lambda item: int(item.get('deleted_at') or 0) > 0
+
+    response = _run(tasks_module.list_unified_tasks(
+        user_id=None, provider=None, skill_name=None, tool_name=None, task_status=None, model=None,
+        group_id=None, start_at=None, end_at=None, include_deleted=True, deletion_status='deleted',
+        refresh_status=False, refresh_min_interval_seconds=5, offset=0, limit=48,
+        user=StubUserModel(id='admin-1', role='admin'),
+    ))
+
+    assert response.total == 1
+    assert [item.id for item in response.items] == ['task-deleted']
+
+
+def test_admin_can_preview_deleted_task(tasks_router_module):
+    tasks_module, material_stub = tasks_router_module
+    requested_options = {}
+
+    async def _load_task_for_read(task_id, **kwargs):
+        requested_options.update(kwargs)
+        return 'user-2', {
+            'task_id': task_id,
+            'user_name': 'Bob',
+            'status': 'SUCCEEDED',
+            'archive_status': 'SUCCEEDED',
+            'download_ready': True,
+            'deleted_at': 10,
+            'created_at': 1,
+            'updated_at': 10,
+        }
+
+    material_stub._load_task_for_read = _load_task_for_read
+    response = _run(tasks_module.get_unified_task_preview(
+        task_id='task-deleted',
+        refresh_status=False,
+        user=StubUserModel(id='admin-1', role='admin'),
+    ))
+
+    assert requested_options['include_deleted'] is True
+    assert response.task_id == 'task-deleted'
+    assert response.download_ready is True
+
+
+def test_regular_user_cannot_read_another_users_task(tasks_router_module):
+    tasks_module, material_stub = tasks_router_module
+
+    async def _load_task_for_read(task_id, **kwargs):
+        return 'user-2', {'task_id': task_id}
+
+    material_stub._load_task_for_read = _load_task_for_read
+
+    with pytest.raises(tasks_module.HTTPException) as exc_info:
+        _run(tasks_module._load_task_for_request(
+            'other-task',
+            StubUserModel(id='user-1', role='user'),
+        ))
+
+    assert exc_info.value.status_code == 404
+
+
+def test_regular_user_cannot_query_other_users_or_deleted_tasks(tasks_router_module):
+    tasks_module, material_stub = tasks_router_module
+    task_records = {
+        'own-active': {'task_id': 'own-active', 'user_name': 'Alice', 'created_at': 3, 'updated_at': 3},
+        'own-deleted': {'task_id': 'own-deleted', 'user_name': 'Alice', 'deleted_at': 10, 'created_at': 2, 'updated_at': 10},
+        'other-active': {'task_id': 'other-active', 'user_name': 'Bob', 'created_at': 1, 'updated_at': 1},
+    }
+    material_stub._iter_task_record_paths = lambda: [
+        ('user-1', Path('/tmp/own-active.json')),
+        ('user-1', Path('/tmp/own-deleted.json')),
+        ('user-2', Path('/tmp/other-active.json')),
+    ]
+    material_stub._load_task_record_from_path = lambda path: dict(task_records[path.stem])
+    material_stub._is_soft_deleted = lambda item: int(item.get('deleted_at') or 0) > 0
+
+    response = _run(tasks_module.list_unified_tasks(
+        user_id='user-2', provider=None, skill_name=None, tool_name=None, task_status=None, model=None,
+        group_id=None, start_at=None, end_at=None, include_deleted=True, deletion_status='all',
+        refresh_status=False, refresh_min_interval_seconds=5, offset=0, limit=48,
+        user=StubUserModel(id='user-1', role='user'),
+    ))
+
+    assert response.total == 1
+    assert [item.id for item in response.items] == ['own-active']
 
 
 def test_unified_tasks_list_filters_by_group_and_time(tasks_router_module):

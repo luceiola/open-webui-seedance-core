@@ -692,7 +692,6 @@ TASK_ARCHIVE_FINAL_STATUSES: set[str] = {
     ARCHIVE_STATUS_FAILED,
 }
 
-TASK_SOFT_DELETE_RETENTION_DAYS = max(1, _get_int_env('TASK_SOFT_DELETE_RETENTION_DAYS', 7))
 TASK_ARCHIVE_MAX_RETRIES = max(0, _get_int_env('TASK_ARCHIVE_MAX_RETRIES', 12))
 TASK_ARCHIVE_POLL_INTERVAL_SECONDS = max(2, _get_int_env('TASK_ARCHIVE_POLL_INTERVAL_SECONDS', 8))
 TASK_ARCHIVE_POLL_MAX_SECONDS = max(30, _get_int_env('TASK_ARCHIVE_POLL_MAX_SECONDS', 1800))
@@ -1153,33 +1152,11 @@ def _is_soft_deleted(task_record: dict[str, Any]) -> bool:
 
 
 def _cleanup_expired_soft_deleted_records() -> None:
-    global _LAST_SOFT_DELETE_CLEANUP_AT
-    now = int(time.time())
-    if now - _LAST_SOFT_DELETE_CLEANUP_AT < 300:
-        return
-    _LAST_SOFT_DELETE_CLEANUP_AT = now
+    """Retain deleted task records and artifacts permanently.
 
-    cutoff = now - TASK_SOFT_DELETE_RETENTION_DAYS * 86400
-    for owner_user_id, path in _iter_task_record_paths():
-        data = _load_task_record_from_path(path)
-        if data is None:
-            continue
-        deleted_at = int(data.get('deleted_at') or 0)
-        if deleted_at <= 0 or deleted_at > cutoff:
-            continue
-
-        for key in ('archived_video_path', 'thumbnail_path'):
-            file_path = _task_file_from_relative(owner_user_id, data.get(key))
-            if file_path and file_path.exists():
-                try:
-                    file_path.unlink()
-                except Exception:
-                    pass
-
-        try:
-            path.unlink()
-        except Exception:
-            pass
+    Kept as a compatibility hook for callers from older task-list code.
+    """
+    return
 
 
 def _is_terminal_task_status(status: Optional[str]) -> bool:

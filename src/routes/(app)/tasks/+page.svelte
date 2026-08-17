@@ -44,6 +44,7 @@
 	let selectedGroupId = '';
 	let selectedProvider = '';
 	let selectedStatus = '';
+	let selectedDeletionStatus: 'active' | 'deleted' | 'all' = 'active';
 	let selectedTimePreset = '7d';
 	let autoApplyTimer: ReturnType<typeof setTimeout> | null = null;
 	let initialized = false;
@@ -74,6 +75,8 @@
 		{ value: '90d', label: '最近3个月' },
 		{ value: '180d', label: '最近半年' }
 	];
+
+	const isAdmin = () => String($user?.role || '').toLowerCase() === 'admin';
 
 	const toAssetUrl = (value?: string | null) => {
 		if (!value) return '';
@@ -114,7 +117,9 @@
 	};
 
 	const isImageTask = (task: GenerationTaskItem): boolean =>
-		String(task.artifact_kind || '').trim().toLowerCase() === 'image';
+		String(task.artifact_kind || '')
+			.trim()
+			.toLowerCase() === 'image';
 
 	const canTaskDownload = (task: GenerationTaskItem): boolean =>
 		isImageTask(task) ? getTaskImageUrls(task).length > 0 : Boolean(task.download_ready);
@@ -150,6 +155,7 @@
 			selectedGroupId || '',
 			selectedProvider || '',
 			selectedStatus || '',
+			selectedDeletionStatus || '',
 			selectedTimePreset || ''
 		]);
 
@@ -169,8 +175,17 @@
 		const urlUserId = String(query.get('user_id') || '').trim();
 		selectedUserId = urlUserId || defaultUserId || '';
 		selectedGroupId = String(query.get('group_id') || '').trim();
-		selectedProvider = String(query.get('provider') || '').trim().toLowerCase();
-		selectedStatus = String(query.get('status') || '').trim().toUpperCase();
+		selectedProvider = String(query.get('provider') || '')
+			.trim()
+			.toLowerCase();
+		selectedStatus = String(query.get('status') || '')
+			.trim()
+			.toUpperCase();
+		const deletionStatus = String(query.get('deletion_status') || '')
+			.trim()
+			.toLowerCase();
+		selectedDeletionStatus =
+			deletionStatus === 'deleted' || deletionStatus === 'all' ? deletionStatus : 'active';
 
 		const urlPreset = String(query.get('time_preset') || '').trim();
 		const supportedPreset = TIME_PRESET_OPTIONS.find((item) => item.value === urlPreset);
@@ -190,6 +205,8 @@
 		if (selectedGroupId) query.set('group_id', selectedGroupId);
 		if (selectedProvider) query.set('provider', selectedProvider);
 		if (selectedStatus) query.set('status', selectedStatus);
+		if (isAdmin() && selectedDeletionStatus !== 'active')
+			query.set('deletion_status', selectedDeletionStatus);
 		query.set('time_preset', selectedTimePreset);
 
 		const queryString = query.toString();
@@ -206,7 +223,10 @@
 	};
 
 	const loadTaskUsers = async () => {
-		taskUsers = await listGenerationTaskUsers(localStorage.token).catch((error) => {
+		taskUsers = await listGenerationTaskUsers(
+			localStorage.token,
+			isAdmin() && selectedDeletionStatus !== 'active'
+		).catch((error) => {
 			console.error(error);
 			return [];
 		});
@@ -224,13 +244,17 @@
 	};
 
 	const loadTaskProviders = async () => {
-		const rows = await listGenerationTaskProviders(localStorage.token, selectedUserId || undefined).catch(
-			(error) => {
-				console.error(error);
-				return [];
-			}
+		const rows = await listGenerationTaskProviders(
+			localStorage.token,
+			selectedUserId || undefined,
+			isAdmin() && selectedDeletionStatus !== 'active'
+		).catch((error) => {
+			console.error(error);
+			return [];
+		});
+		const uniq = Array.from(
+			new Set(rows.map((item) => String(item).trim().toLowerCase()).filter(Boolean))
 		);
-		const uniq = Array.from(new Set(rows.map((item) => String(item).trim().toLowerCase()).filter(Boolean)));
 		providerOptions = ['', ...uniq];
 		if (providerOptions.length <= 1) {
 			providerOptions = [...FALLBACK_PROVIDER_OPTIONS];
@@ -260,15 +284,16 @@
 			const result = await listGenerationTasks(localStorage.token, {
 				user_id: selectedUserId || undefined,
 				group_id: selectedGroupId || undefined,
-					provider: selectedProvider || undefined,
-					status: selectedStatus || undefined,
-					start_at: range.startAt,
-					end_at: range.endAt,
-					include_deleted: false,
-					refresh_status: shouldRefreshStatus(),
-					offset,
-					limit: PAGE_SIZE
-				});
+				provider: selectedProvider || undefined,
+				status: selectedStatus || undefined,
+				start_at: range.startAt,
+				end_at: range.endAt,
+				include_deleted: isAdmin() && selectedDeletionStatus !== 'active',
+				deletion_status: isAdmin() ? selectedDeletionStatus : 'active',
+				refresh_status: shouldRefreshStatus(),
+				offset,
+				limit: PAGE_SIZE
+			});
 
 			const rows = result.items;
 			totalTasks = result.total;
@@ -300,6 +325,7 @@
 			return;
 		}
 		writeFiltersToUrl();
+		await loadTaskUsers();
 		await loadTaskProviders();
 		await resetAndLoadTasks();
 		lastAppliedFilterKey = getFilterStateKey();
@@ -325,7 +351,9 @@
 	};
 
 	const refreshPreviewTask = async (task: GenerationTaskItem) => {
-		const preview = await getGenerationTaskPreview(localStorage.token, task.task_id).catch(() => null);
+		const preview = await getGenerationTaskPreview(localStorage.token, task.task_id).catch(
+			() => null
+		);
 		if (!preview) return task;
 
 		return {
@@ -515,6 +543,7 @@
 		selectedGroupId;
 		selectedProvider;
 		selectedStatus;
+		selectedDeletionStatus;
 		selectedTimePreset;
 		scheduleAutoApply();
 	}
@@ -569,7 +598,9 @@
 			{/if}
 
 			<div class="ml-2 py-0.5 self-center flex items-center justify-between w-full">
-				<div class="flex gap-1 scrollbar-none overflow-x-auto w-fit text-center text-sm font-medium bg-transparent py-1 touch-auto pointer-events-auto">
+				<div
+					class="flex gap-1 scrollbar-none overflow-x-auto w-fit text-center text-sm font-medium bg-transparent py-1 touch-auto pointer-events-auto"
+				>
 					<span class="min-w-fit transition">{$i18n.t('Tasks')}</span>
 				</div>
 
@@ -608,12 +639,14 @@
 	<div class="flex-1 overflow-y-auto px-3 pb-4">
 		<div class="sticky top-0 z-10 bg-gray-50/85 dark:bg-gray-950/85 backdrop-blur-sm pt-2 pb-3">
 			<div class="task-filter-grid">
-				<select class="task-select" bind:value={selectedUserId}>
-					<option value="">全部用户</option>
-					{#each taskUsers as item (item.user_id)}
-						<option value={item.user_id}>{item.user_name}</option>
-					{/each}
-				</select>
+				{#if isAdmin()}
+					<select class="task-select" bind:value={selectedUserId}>
+						<option value="">全部用户</option>
+						{#each taskUsers as item (item.user_id)}
+							<option value={item.user_id}>{item.user_name}</option>
+						{/each}
+					</select>
+				{/if}
 
 				<select class="task-select" bind:value={selectedGroupId}>
 					<option value="">全部用户组</option>
@@ -633,6 +666,14 @@
 						<option value={status}>{status || '全部状态'}</option>
 					{/each}
 				</select>
+
+				{#if isAdmin()}
+					<select class="task-select" bind:value={selectedDeletionStatus}>
+						<option value="active">未删除</option>
+						<option value="all">全部（含已删除）</option>
+						<option value="deleted">已删除</option>
+					</select>
+				{/if}
 
 				<select class="task-select" bind:value={selectedTimePreset}>
 					{#each TIME_PRESET_OPTIONS as option}
@@ -689,21 +730,23 @@
 									preload="metadata"
 								></video>
 							{:else}
-								<div class="w-full h-full flex items-center justify-center text-xs text-gray-500 px-2 text-center">
+								<div
+									class="w-full h-full flex items-center justify-center text-xs text-gray-500 px-2 text-center"
+								>
 									{statusLabel(task.status)}
 								</div>
 							{/if}
 
-								<div class="task-overlay-top">
-									<button
-										type="button"
-										class="task-icon-btn"
-										disabled={!canTaskDownload(task)}
-										on:click|stopPropagation={() => {
-											handleDownload(task);
-										}}
-										aria-label="download"
-									>
+							<div class="task-overlay-top">
+								<button
+									type="button"
+									class="task-icon-btn"
+									disabled={!canTaskDownload(task)}
+									on:click|stopPropagation={() => {
+										handleDownload(task);
+									}}
+									aria-label="download"
+								>
 									<Download className="size-4" />
 								</button>
 							</div>
@@ -714,6 +757,9 @@
 							<div class="task-meta-line task-meta-dim">{task.task_id}</div>
 							<div class="task-meta-line task-meta-dim">
 								{statusLabel(task.status)} / {statusLabel(task.archive_status)}
+								{#if task.deleted_at}
+									/ 已删除
+								{/if}
 							</div>
 						</div>
 					</div>
@@ -742,21 +788,21 @@
 		<div class="p-4">
 			<div class="flex items-center justify-between gap-3 mb-3">
 				<div class="text-sm font-medium truncate">{selectedTask.task_id}</div>
-					<div class="flex items-center gap-2">
-							<button
-								type="button"
-								class="task-icon-btn modal-icon"
-								disabled={!canTaskDownload(selectedTask)}
-							on:click={() => {
-								handleDownload(selectedTask);
-							}}
-								aria-label="download"
-							>
-							<Download className="size-4" />
-						</button>
+				<div class="flex items-center gap-2">
+					<button
+						type="button"
+						class="task-icon-btn modal-icon"
+						disabled={!canTaskDownload(selectedTask)}
+						on:click={() => {
+							handleDownload(selectedTask);
+						}}
+						aria-label="download"
+					>
+						<Download className="size-4" />
+					</button>
 
-						{#if selectedTask.can_delete}
-							<button
+					{#if selectedTask.can_delete}
+						<button
 							type="button"
 							class="task-icon-btn modal-icon danger"
 							on:click={() => {
@@ -794,34 +840,34 @@
 				{/if}
 			</div>
 
-				{#if selectedTaskImageUrls.length > 1}
-					<div class="mt-2 flex gap-2 overflow-x-auto pb-1">
-						{#each selectedTaskImageUrls as imageUrl, idx (`preview-image-${selectedTask.task_id}-${imageUrl}`)}
-							<button
-								type="button"
-								class="task-preview-thumb-btn"
-								class:active={idx === selectedTaskImageIndex}
-								on:click={() => {
-									selectedTaskImageIndex = idx;
-								}}
-								aria-label={`preview-thumb-${idx + 1}`}
-							>
-								<img
-									src={toAssetUrl(imageUrl)}
-									alt={`task-preview-thumb-${selectedTask.task_id}`}
-									class="w-16 h-16 object-cover"
-									loading="lazy"
-								/>
-							</button>
-						{/each}
-					</div>
-				{/if}
+			{#if selectedTaskImageUrls.length > 1}
+				<div class="mt-2 flex gap-2 overflow-x-auto pb-1">
+					{#each selectedTaskImageUrls as imageUrl, idx (`preview-image-${selectedTask.task_id}-${imageUrl}`)}
+						<button
+							type="button"
+							class="task-preview-thumb-btn"
+							class:active={idx === selectedTaskImageIndex}
+							on:click={() => {
+								selectedTaskImageIndex = idx;
+							}}
+							aria-label={`preview-thumb-${idx + 1}`}
+						>
+							<img
+								src={toAssetUrl(imageUrl)}
+								alt={`task-preview-thumb-${selectedTask.task_id}`}
+								class="w-16 h-16 object-cover"
+								loading="lazy"
+							/>
+						</button>
+					{/each}
+				</div>
+			{/if}
 
-				<div class="task-detail-section">
-					<div class="task-detail-title">提示词</div>
-					<div class="task-detail-body">
-						{#if selectedTaskPromptSegments.length === 0}
-							<div class="task-detail-empty">暂无提示词</div>
+			<div class="task-detail-section">
+				<div class="task-detail-title">提示词</div>
+				<div class="task-detail-body">
+					{#if selectedTaskPromptSegments.length === 0}
+						<div class="task-detail-empty">暂无提示词</div>
 					{:else}
 						<p class="task-prompt-text">
 							{#each selectedTaskPromptSegments as segment, idx (`prompt-${selectedTask.task_id}-${idx}`)}
@@ -836,10 +882,10 @@
 				</div>
 			</div>
 
-				<div class="task-detail-section">
-					<div class="task-detail-title">生成参数</div>
-					<div class="task-detail-body">
-						{#if selectedTaskParamEntries.length === 0}
+			<div class="task-detail-section">
+				<div class="task-detail-title">生成参数</div>
+				<div class="task-detail-body">
+					{#if selectedTaskParamEntries.length === 0}
 						<div class="task-detail-empty">暂无参数</div>
 					{:else}
 						<div class="task-param-grid">
@@ -848,20 +894,20 @@
 								<div class="task-param-value">{row[1]}</div>
 							{/each}
 						</div>
-						{/if}
+					{/if}
+				</div>
+			</div>
+
+			{#if selectedTaskIsFailed}
+				<div class="task-detail-section">
+					<div class="task-detail-title">失败原因</div>
+					<div class="task-detail-body">
+						<p class="task-prompt-text">{selectedTaskFailureReason}</p>
 					</div>
 				</div>
-
-				{#if selectedTaskIsFailed}
-					<div class="task-detail-section">
-						<div class="task-detail-title">失败原因</div>
-						<div class="task-detail-body">
-							<p class="task-prompt-text">{selectedTaskFailureReason}</p>
-						</div>
-					</div>
-				{/if}
-			</div>
-		{/if}
+			{/if}
+		</div>
+	{/if}
 </Modal>
 
 <style>

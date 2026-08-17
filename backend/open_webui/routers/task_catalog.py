@@ -110,6 +110,7 @@ class TaskCatalog:
         start_at: Optional[int] = None,
         end_at: Optional[int] = None,
         include_deleted: bool = False,
+        deletion_status: str | None = None,
         offset: int = 0,
         limit: int = 48,
     ) -> tuple[list[tuple[str, dict[str, Any]]], int]:
@@ -135,7 +136,10 @@ class TaskCatalog:
         if end_at is not None:
             where.append('created_at <= ?')
             values.append(end_at)
-        if not include_deleted:
+        normalized_deletion_status = str(deletion_status or '').strip().lower()
+        if normalized_deletion_status == 'deleted':
+            where.append('deleted_at > 0')
+        elif normalized_deletion_status == 'active' or not include_deleted:
             where.append('deleted_at = 0')
         clause = f" WHERE {' AND '.join(where)}" if where else ''
         with self._lock, self._connect() as conn:

@@ -138,6 +138,35 @@ class UnifiedTaskListResponse(BaseModel):
     limit: int
 
 
+def _is_admin(user: UserModel) -> bool:
+    return str(getattr(user, 'role', '') or '').strip().lower() == 'admin'
+
+
+def _requested_deletion_status(value: Optional[str], *, include_deleted: bool) -> str:
+    normalized = str(value or '').strip().lower()
+    if normalized in {'active', 'deleted', 'all'}:
+        return normalized
+    return 'all' if include_deleted else 'active'
+
+
+async def _load_task_for_request(
+    task_id: str,
+    user: UserModel,
+    *,
+    refresh_status: bool = False,
+    refresh_min_interval_seconds: int = 5,
+) -> tuple[str, dict[str, Any]]:
+    owner_user_id, item = await material_packages_router._load_task_for_read(
+        task_id,
+        include_deleted=_is_admin(user),
+        refresh_status=refresh_status,
+        refresh_min_interval_seconds=refresh_min_interval_seconds,
+    )
+    if not _is_admin(user) and str(owner_user_id) != str(user.id):
+        raise HTTPException(status_code=404, detail='Task not found')
+    return owner_user_id, item
+
+
 class UnifiedTaskUserItem(BaseModel):
     user_id: str
     user_name: str
@@ -1502,6 +1531,7 @@ async def list_unified_tasks(
     start_at: Optional[int] = Query(default=None, ge=0),
     end_at: Optional[int] = Query(default=None, ge=0),
     include_deleted: bool = Query(default=False),
+    deletion_status: Optional[str] = Query(default=None),
     refresh_status: bool = Query(default=True),
     refresh_min_interval_seconds: int = Query(default=5, ge=0, le=600),
     offset: int = Query(default=0, ge=0),
@@ -1510,7 +1540,19 @@ async def list_unified_tasks(
 ):
     material_packages_router._cleanup_expired_soft_deleted_records()
 
+    is_admin = _is_admin(user)
     desired_user = (user_id or '').strip() if user_id else None
+    if not is_admin:
+        desired_user = str(user.id)
+    desired_deletion_status = _requested_deletion_status(
+        deletion_status,
+        include_deleted=include_deleted if is_admin else False,
+    )
+    if not is_admin:
+        desired_deletion_status = 'active'
+    catalog_include_deleted = is_admin and (
+        include_deleted or desired_deletion_status in {'deleted', 'all'}
+    )
     desired_provider = (provider or '').strip().lower() if provider else None
     desired_skill_name = (skill_name or '').strip().lower() if skill_name else None
     desired_tool_name = (tool_name or '').strip().lower() if tool_name else None
@@ -1569,7 +1611,7 @@ async def list_unified_tasks(
         }
 
     catalog_status = desired_status if desired_status and desired_status != 'UNKNOWN' else None
-    catalog_rows, total = material_packages_router.TASK_CATALOG.query(
+    catalog_query = dict(
         user_id=desired_user,
         owner_ids=catalog_owner_ids,
         provider=desired_provider,
@@ -1579,10 +1621,19 @@ async def list_unified_tasks(
         model=desired_model,
         start_at=start_at_value,
         end_at=end_at_value,
-        include_deleted=include_deleted,
+        include_deleted=catalog_include_deleted,
+        deletion_status=desired_deletion_status,
         offset=0 if desired_status == 'UNKNOWN' else offset,
         limit=200000 if desired_status == 'UNKNOWN' else limit,
     )
+    try:
+        catalog_rows, total = material_packages_router.TASK_CATALOG.query(**catalog_query)
+    except TypeError as exc:
+        # Keep compatibility with lightweight catalog doubles used by older integrations.
+        if 'deletion_status' not in str(exc):
+            raise
+        catalog_query.pop('deletion_status', None)
+        catalog_rows, total = material_packages_router.TASK_CATALOG.query(**catalog_query)
 
     for owner_user_id, item in catalog_rows:
         task_id = str(item.get('task_id') or '').strip()
@@ -1636,7 +1687,16 @@ async def list_unified_task_users(
     include_deleted: bool = Query(default=False),
     user: UserModel = Depends(get_verified_user),
 ):
-    _ = user
+    if not _is_admin(user):
+        owner_user_id = str(user.id)
+        owner_user_name = str(
+            getattr(user, 'name', None)
+            or getattr(user, 'username', None)
+            or owner_user_id
+        )
+        return UnifiedTaskUsersResponse(
+            users=[UnifiedTaskUserItem(user_id=owner_user_id, user_name=owner_user_name)]
+        )
     material_packages_router._cleanup_expired_soft_deleted_records()
 
     material_packages_router.ensure_task_catalog()
@@ -1695,18 +1755,28 @@ async def list_unified_task_providers(
     include_deleted: bool = Query(default=False),
     user: UserModel = Depends(get_verified_user),
 ):
-    _ = user
+    is_admin = _is_admin(user)
     material_packages_router._cleanup_expired_soft_deleted_records()
     material_packages_router.ensure_task_catalog()
 
     desired_user = (user_id or '').strip() if user_id else None
+    if not is_admin:
+        desired_user = str(user.id)
     seen: set[str] = set()
 
-    catalog_rows, _ = material_packages_router.TASK_CATALOG.query(
+    catalog_query = dict(
         user_id=desired_user,
-        include_deleted=include_deleted,
+        include_deleted=include_deleted if is_admin else False,
+        deletion_status='all' if (include_deleted and is_admin) else 'active',
         limit=200000,
     )
+    try:
+        catalog_rows, _ = material_packages_router.TASK_CATALOG.query(**catalog_query)
+    except TypeError as exc:
+        if 'deletion_status' not in str(exc):
+            raise
+        catalog_query.pop('deletion_status', None)
+        catalog_rows, _ = material_packages_router.TASK_CATALOG.query(**catalog_query)
     for _, item in catalog_rows:
         provider_value = str(item.get('provider') or 'ark').strip().lower() or 'ark'
         seen.add(provider_value)
@@ -1728,8 +1798,9 @@ async def get_unified_task_preview(
     refresh_status: bool = Query(default=True),
     user: UserModel = Depends(get_verified_user),
 ):
-    owner_user_id, item = await material_packages_router._load_task_for_read(
+    owner_user_id, item = await _load_task_for_request(
         task_id,
+        user,
         refresh_status=refresh_status,
         refresh_min_interval_seconds=5,
     )
@@ -1755,8 +1826,7 @@ async def get_unified_task_preview(
 
 @router.get('/{task_id}/images/download')
 async def download_unified_task_images(task_id: str, user: UserModel = Depends(get_verified_user)):
-    _ = user
-    owner_user_id, item = await material_packages_router._load_task_for_read(task_id, refresh_status=False)
+    owner_user_id, item = await _load_task_for_request(task_id, user)
     image_paths = _resolve_local_task_image_paths(owner_user_id, item)
     if not image_paths:
         raise HTTPException(status_code=404, detail='Image not found')
@@ -1779,8 +1849,7 @@ async def get_unified_task_image(
     index: int,
     user: UserModel = Depends(get_verified_user),
 ):
-    _ = user
-    owner_user_id, item = await material_packages_router._load_task_for_read(task_id, refresh_status=False)
+    owner_user_id, item = await _load_task_for_request(task_id, user)
     image_paths = _resolve_local_task_image_paths(owner_user_id, item)
     if index < 0 or index >= len(image_paths):
         raise HTTPException(status_code=404, detail='Image not found')
@@ -1792,8 +1861,7 @@ async def get_unified_task_image(
 
 @router.get('/{task_id}/download')
 async def download_unified_task(task_id: str, user: UserModel = Depends(get_verified_user)):
-    _ = user
-    owner_user_id, item = await material_packages_router._load_task_for_read(task_id, refresh_status=False)
+    owner_user_id, item = await _load_task_for_request(task_id, user)
     if not bool(item.get('download_ready')):
         raise HTTPException(status_code=409, detail='ArchiveNotReady')
 
@@ -1901,8 +1969,9 @@ async def get_unified_task_detail(
     refresh_min_interval_seconds: int = Query(default=5, ge=0, le=600),
     user: UserModel = Depends(get_verified_user),
 ):
-    owner_user_id, item = await material_packages_router._load_task_for_read(
+    owner_user_id, item = await _load_task_for_request(
         task_id,
+        user,
         refresh_status=refresh_status,
         refresh_min_interval_seconds=refresh_min_interval_seconds,
     )

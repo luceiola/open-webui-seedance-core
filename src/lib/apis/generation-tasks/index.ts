@@ -169,7 +169,7 @@ const mapUnifiedTaskToLegacy = (item: UnifiedTaskApiItem): GenerationTaskItem =>
 		video_download_url:
 			artifactKind === 'image'
 				? null
-				: item.video_download_url ?? `/api/v1/tasks/${encodeURIComponent(taskId)}/download`,
+				: (item.video_download_url ?? `/api/v1/tasks/${encodeURIComponent(taskId)}/download`),
 		video_url: null,
 		error_code: item.error_code ?? null,
 		error_message: item.error_message ?? null,
@@ -205,6 +205,7 @@ export const listGenerationTasks = async (
 		chat_id?: string;
 		package_id?: string;
 		include_deleted?: boolean;
+		deletion_status?: 'active' | 'deleted' | 'all';
 		refresh_status?: boolean;
 		offset?: number;
 		limit?: number;
@@ -224,6 +225,9 @@ export const listGenerationTasks = async (
 	if (params.package_id) query.append('package_id', params.package_id);
 	if (params.include_deleted !== undefined) {
 		query.append('include_deleted', String(params.include_deleted));
+	}
+	if (params.deletion_status) {
+		query.append('deletion_status', params.deletion_status);
 	}
 	if (params.refresh_status !== undefined) {
 		query.append('refresh_status', String(params.refresh_status));
@@ -276,9 +280,13 @@ export const listGenerationTasks = async (
 	};
 };
 
-export const listGenerationTaskUsers = async (token: string): Promise<GenerationTaskUserItem[]> => {
+export const listGenerationTaskUsers = async (
+	token: string,
+	includeDeleted = false
+): Promise<GenerationTaskUserItem[]> => {
 	let error = null;
-	const res = await fetch(`${WEBUI_API_BASE_URL}/tasks/users`, {
+	const query = new URLSearchParams({ include_deleted: String(includeDeleted) });
+	const res = await fetch(`${WEBUI_API_BASE_URL}/tasks/users?${query.toString()}`, {
 		method: 'GET',
 		headers: buildAuthHeaders(token)
 	})
@@ -304,11 +312,12 @@ export const listGenerationTaskUsers = async (token: string): Promise<Generation
 
 export const listGenerationTaskProviders = async (
 	token: string,
-	userId?: string
+	userId?: string,
+	includeDeleted = false
 ): Promise<string[]> => {
 	const query = new URLSearchParams();
 	if (userId) query.append('user_id', userId);
-	query.append('include_deleted', 'false');
+	query.append('include_deleted', String(includeDeleted));
 
 	let error = null;
 	const res = await fetch(`${WEBUI_API_BASE_URL}/tasks/providers?${query.toString()}`, {
@@ -335,7 +344,9 @@ export const listGenerationTaskProviders = async (
 	return [];
 };
 
-export const listGenerationTaskGroups = async (token: string): Promise<GenerationTaskGroupItem[]> => {
+export const listGenerationTaskGroups = async (
+	token: string
+): Promise<GenerationTaskGroupItem[]> => {
 	let error = null;
 	const res = await fetch(`${WEBUI_API_BASE_URL}/tasks/groups`, {
 		method: 'GET',
@@ -393,10 +404,13 @@ export const deleteGenerationTask = async (
 	if (deleteReason) query.append('delete_reason', deleteReason);
 
 	let error = null;
-	const res = await fetch(`${WEBUI_API_BASE_URL}/tasks/${encodeURIComponent(taskId)}?${query.toString()}`, {
-		method: 'DELETE',
-		headers: buildAuthHeaders(token)
-	})
+	const res = await fetch(
+		`${WEBUI_API_BASE_URL}/tasks/${encodeURIComponent(taskId)}?${query.toString()}`,
+		{
+			method: 'DELETE',
+			headers: buildAuthHeaders(token)
+		}
+	)
 		.then(async (resp) => {
 			if (!resp.ok) throw await resp.json();
 			return resp.json();
@@ -433,7 +447,10 @@ export const downloadGenerationTask = async (token: string, taskId: string): Pro
 	return resp.blob();
 };
 
-export const downloadGenerationTaskImages = async (token: string, taskId: string): Promise<Blob> => {
+export const downloadGenerationTaskImages = async (
+	token: string,
+	taskId: string
+): Promise<Blob> => {
 	const resp = await fetch(
 		`${WEBUI_API_BASE_URL}/tasks/${encodeURIComponent(taskId)}/images/download`,
 		{
