@@ -1445,6 +1445,68 @@ def test_archive_succeeded_task_does_not_redownload(material_packages_router_mod
     assert result['thumbnail_url'] == material_module._build_task_thumbnail_url(task_id)
 
 
+def test_deleted_task_media_routes_allow_admin_only(material_packages_router_module, tmp_path):
+    material_module = material_packages_router_module
+    task_id = 'deleted-video-task'
+    owner_user_id = 'owner-1'
+    video_path = tmp_path / 'task.mp4'
+    thumbnail_path = tmp_path / 'task.jpg'
+    video_path.write_bytes(b'video')
+    thumbnail_path.write_bytes(b'thumbnail')
+
+    task_record = {
+        'task_id': task_id,
+        'download_ready': True,
+        'archived_video_path': 'task_archives/deleted-video-task.mp4',
+        'thumbnail_path': 'task_thumbnails/deleted-video-task.jpg',
+    }
+    seen_include_deleted = []
+
+    async def _load_task_for_read(task_id_value, **kwargs):
+        assert task_id_value == task_id
+        seen_include_deleted.append(kwargs.get('include_deleted'))
+        return owner_user_id, task_record
+
+    def _task_file_from_relative(_owner_user_id, relative_path):
+        return video_path if str(relative_path).endswith('.mp4') else thumbnail_path
+
+    material_module._load_task_for_read = _load_task_for_read
+    material_module._task_file_from_relative = _task_file_from_relative
+    admin = StubUserModel(id='admin-1', role='admin')
+
+    video_response = _run(material_module.stream_generation_task_video(task_id, admin))
+    thumbnail_response = _run(material_module.get_generation_task_thumbnail(task_id, admin))
+    download_response = _run(material_module.download_generation_task(task_id, admin))
+
+    assert video_response.path == video_path
+    assert thumbnail_response.path == thumbnail_path
+    assert download_response.path == video_path
+    assert seen_include_deleted == [True, True, True]
+
+
+def test_deleted_task_media_routes_remain_hidden_from_regular_users(material_packages_router_module):
+    material_module = material_packages_router_module
+    seen_include_deleted = []
+
+    async def _load_task_for_read(_task_id, **kwargs):
+        seen_include_deleted.append(kwargs.get('include_deleted'))
+        raise HTTPException(status_code=404, detail='Task not found')
+
+    material_module._load_task_for_read = _load_task_for_read
+    user = StubUserModel(id='user-1', role='user')
+
+    for route in (
+        material_module.stream_generation_task_video,
+        material_module.get_generation_task_thumbnail,
+        material_module.download_generation_task,
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            _run(route('deleted-video-task', user))
+        assert exc_info.value.status_code == 404
+
+    assert seen_include_deleted == [False, False, False]
+
+
 def test_empty_video_download_is_retryable_and_removes_partial_file(
     material_packages_router_module,
     tmp_path,

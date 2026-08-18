@@ -879,6 +879,10 @@ def _task_delete_allowed(current_user: UserModel, owner_user_id: str) -> bool:
     return current_user.role == 'admin' or str(current_user.id) == str(owner_user_id)
 
 
+def _is_admin_user(user: UserModel) -> bool:
+    return str(getattr(user, 'role', '') or '').strip().lower() == 'admin'
+
+
 def _sync_task_serving_fields(user_id: str, task_record: dict[str, Any]) -> bool:
     changed = False
     task_id = str(task_record.get('task_id') or '').strip()
@@ -3004,8 +3008,11 @@ async def get_generation_task_preview(
 
 @router.get('/tasks/{task_id}/video')
 async def stream_generation_task_video(task_id: str, user: UserModel = Depends(get_verified_user)):
-    _ = user
-    owner_user_id, item = await _load_task_for_read(task_id, refresh_status=False)
+    owner_user_id, item = await _load_task_for_read(
+        task_id,
+        include_deleted=_is_admin_user(user),
+        refresh_status=False,
+    )
     if not item.get('download_ready'):
         raise HTTPException(status_code=409, detail='ArchiveNotReady')
 
@@ -3019,8 +3026,11 @@ async def stream_generation_task_video(task_id: str, user: UserModel = Depends(g
 
 @router.get('/tasks/{task_id}/thumbnail')
 async def get_generation_task_thumbnail(task_id: str, user: UserModel = Depends(get_verified_user)):
-    _ = user
-    owner_user_id, item = await _load_task_for_read(task_id, refresh_status=False)
+    owner_user_id, item = await _load_task_for_read(
+        task_id,
+        include_deleted=_is_admin_user(user),
+        refresh_status=False,
+    )
     thumbnail_path = _task_file_from_relative(owner_user_id, item.get('thumbnail_path'))
     if not thumbnail_path:
         raise HTTPException(status_code=404, detail='Thumbnail not found')
@@ -3030,8 +3040,11 @@ async def get_generation_task_thumbnail(task_id: str, user: UserModel = Depends(
 
 @router.get('/tasks/{task_id}/download')
 async def download_generation_task(task_id: str, user: UserModel = Depends(get_verified_user)):
-    _ = user
-    owner_user_id, item = await _load_task_for_read(task_id, refresh_status=False)
+    owner_user_id, item = await _load_task_for_read(
+        task_id,
+        include_deleted=_is_admin_user(user),
+        refresh_status=False,
+    )
     if not item.get('download_ready'):
         raise HTTPException(status_code=409, detail='ArchiveNotReady')
 
