@@ -335,6 +335,29 @@ def _relative_migrated_task_image_dir(
     return None
 
 
+def _task_image_candidate_roots(owner_user_id: str) -> list[Path]:
+    def _build_user_root(builder: Any) -> Optional[Path]:
+        if not callable(builder):
+            return None
+        try:
+            try:
+                return Path(builder(str(owner_user_id), ensure_exists=False)).resolve()
+            except TypeError:
+                return Path(builder(str(owner_user_id))).resolve()
+        except Exception:
+            return None
+
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for builder_name in ('_user_root_dir', '_task_artifact_user_root_dir'):
+        root = _build_user_root(getattr(material_packages_router, builder_name, None))
+        if root is None or str(root) in seen:
+            continue
+        seen.add(str(root))
+        roots.append(root)
+    return roots
+
+
 def _resolve_local_task_image_paths(owner_user_id: str, item: dict[str, Any]) -> list[Path]:
     generation_params = item.get('generation_params')
     if not isinstance(generation_params, dict):
@@ -357,24 +380,11 @@ def _resolve_local_task_image_paths(owner_user_id: str, item: dict[str, Any]) ->
     except Exception:
         return []
 
-    def _build_user_root(builder: Any) -> Optional[Path]:
-        if not callable(builder):
-            return None
-        try:
-            try:
-                return Path(builder(str(owner_user_id), ensure_exists=False)).resolve()
-            except TypeError:
-                return Path(builder(str(owner_user_id))).resolve()
-        except Exception:
-            return None
-
     # Image2 records retain their original local absolute output path after
     # migration, while the actual files may have moved to TASK_ARTIFACTS_ROOT.
     # Derive one verified relative path, then probe only the matching local and
     # mounted directories instead of scanning either storage root.
-    local_user_root = _build_user_root(getattr(material_packages_router, '_user_root_dir', None))
-    artifact_user_root = _build_user_root(getattr(material_packages_router, '_task_artifact_user_root_dir', None))
-    candidate_roots = [root for root in (local_user_root, artifact_user_root) if root is not None]
+    candidate_roots = _task_image_candidate_roots(owner_user_id)
     relative_output_dir = _relative_migrated_task_image_dir(
         owner_user_id,
         image_output_dir,
@@ -455,8 +465,8 @@ def _build_declared_task_image_thumbnail_url(task_id: str, owner_user_id: str, i
 
     try:
         image_output_dir = Path(image_output_dir_text).expanduser().resolve()
-        user_root = Path(material_packages_router._user_root_dir(str(owner_user_id))).resolve()
-        if _relative_migrated_task_image_dir(owner_user_id, image_output_dir, [user_root]) is None:
+        candidate_roots = _task_image_candidate_roots(owner_user_id)
+        if _relative_migrated_task_image_dir(owner_user_id, image_output_dir, candidate_roots) is None:
             return None
     except Exception:
         return None

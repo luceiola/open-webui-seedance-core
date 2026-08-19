@@ -971,13 +971,13 @@ def test_unified_task_preview_rebases_migrated_image_output_path(tasks_router_mo
     ) == expected_url
 
 
-def test_unified_tasks_list_uses_declared_image_thumbnail_without_directory_scan(tasks_router_module, tmp_path):
+def test_unified_tasks_list_uses_task_artifact_thumbnail_without_directory_scan(tasks_router_module, tmp_path):
     tasks_module, material_stub = tasks_router_module
     owner_user_id = 'user-1'
     task_id = 'task-image-local'
 
-    user_root = tmp_path / 'cache' / 'material_packages' / owner_user_id
-    image_dir = user_root / 'task_vendor_artifacts' / 'btn_image2' / task_id / 'images'
+    artifact_user_root = tmp_path / 'generated-artifacts' / owner_user_id
+    image_dir = artifact_user_root / 'task_vendor_artifacts' / 'btn_image2' / task_id / 'images'
     image_dir.mkdir(parents=True, exist_ok=True)
     (image_dir / 'image_001.png').write_bytes(b'fake-image-1')
     (image_dir / 'image_002.png').write_bytes(b'fake-image-2')
@@ -1009,6 +1009,7 @@ def test_unified_tasks_list_uses_declared_image_thumbnail_without_directory_scan
     material_stub._is_soft_deleted = lambda item: False
     material_stub._generation_skill_from_model = lambda model: 'btn-image2'
     material_stub._user_root_dir = lambda uid: tmp_path / 'cache' / 'material_packages' / str(uid)
+    material_stub._task_artifact_user_root_dir = lambda uid: tmp_path / 'generated-artifacts' / str(uid)
 
     requester = StubUserModel(id='admin-1', role='admin')
     response = _run(
@@ -1036,6 +1037,27 @@ def test_unified_tasks_list_uses_declared_image_thumbnail_without_directory_scan
     assert response.items[0].image_urls == [f'/api/v1/tasks/{task_id}/images/0']
     assert response.items[0].primary_image_url == f'/api/v1/tasks/{task_id}/images/0'
     assert response.items[0].thumbnail_url == f'/api/v1/tasks/{task_id}/images/0'
+
+
+def test_declared_image_thumbnail_rejects_path_outside_task_roots(tasks_router_module, tmp_path):
+    tasks_module, material_stub = tasks_router_module
+    owner_user_id = 'user-1'
+    task_id = 'task-image-outside'
+    material_stub._user_root_dir = lambda uid: tmp_path / 'cache' / 'material_packages' / str(uid)
+    material_stub._task_artifact_user_root_dir = lambda uid: tmp_path / 'generated-artifacts' / str(uid)
+
+    thumbnail_url = tasks_module._build_declared_task_image_thumbnail_url(
+        task_id,
+        owner_user_id,
+        {
+            'generation_params': {
+                'saved_image_dir': str(tmp_path / 'outside' / 'images'),
+                'image_files': "['image_001.png']",
+            },
+        },
+    )
+
+    assert thumbnail_url is None
 
 
 def test_unified_tasks_list_skips_image_directory_scan(tasks_router_module, tmp_path):
