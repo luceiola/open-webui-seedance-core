@@ -51,24 +51,42 @@ def main() -> int:
         task_id = str(record.get('task_id') or path.stem)
         thumb_relpath = material._archive_thumb_relpath(task_id)
         thumb_path = material._task_file_from_relative(owner_user_id, thumb_relpath)
+        desired_url = material._build_task_thumbnail_url(task_id)
         sources = material._resolve_task_image_sources(owner_user_id, record)
-        if not sources:
+        if not thumb_path and not sources:
             missing_source += 1
             logging.warning('no source image: %s/%s', owner_user_id, task_id)
             continue
-        if thumb_path and thumb_path.is_file() and thumb_path.stat().st_size > 0 and not args.overwrite:
+        metadata_current = (
+            record.get('thumbnail_path') == thumb_relpath
+            and record.get('thumbnail_url') == desired_url
+        )
+        if thumb_path and not args.overwrite and metadata_current:
             skipped += 1
             continue
         if args.dry_run:
             generated += 1
-            logging.info('would generate: %s/%s from %s', owner_user_id, task_id, sources[0])
+            action = (
+                'regenerate'
+                if args.overwrite and thumb_path
+                else ('repair metadata' if thumb_path else 'generate')
+            )
+            logging.info('would %s: %s/%s', action, owner_user_id, task_id)
             continue
 
-        if material.ensure_image_task_thumbnail(owner_user_id, record, overwrite=args.overwrite):
-            material._sync_task_serving_fields(owner_user_id, record)
+        changed = material.ensure_image_task_thumbnail(owner_user_id, record, overwrite=args.overwrite)
+        if material._sync_task_serving_fields(owner_user_id, record):
+            changed = True
+        resolved_thumb = material._task_file_from_relative(
+            owner_user_id,
+            record.get('thumbnail_path'),
+        )
+        if resolved_thumb and changed:
             material._save_task_record(owner_user_id, task_id, record)
             generated += 1
-            logging.info('generated: %s/%s', owner_user_id, task_id)
+            logging.info('updated: %s/%s', owner_user_id, task_id)
+        elif resolved_thumb:
+            skipped += 1
         else:
             failed += 1
             logging.warning('generation failed: %s/%s', owner_user_id, task_id)
