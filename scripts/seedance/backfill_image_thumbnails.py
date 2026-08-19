@@ -31,6 +31,7 @@ def main() -> int:
     scanned = 0
     generated = 0
     skipped = 0
+    missing_source = 0
     failed = 0
 
     for owner_user_id, path in material._iter_task_record_paths():
@@ -43,13 +44,16 @@ def main() -> int:
         if record is None or str(record.get('artifact_kind') or '').strip().lower() != material.TASK_ARTIFACT_KIND_IMAGE:
             skipped += 1
             continue
+        if not material._is_succeeded_task_status(record.get('status')):
+            skipped += 1
+            continue
 
         task_id = str(record.get('task_id') or path.stem)
         thumb_relpath = material._archive_thumb_relpath(task_id)
         thumb_path = material._task_file_from_relative(owner_user_id, thumb_relpath)
         sources = material._resolve_task_image_sources(owner_user_id, record)
         if not sources:
-            failed += 1
+            missing_source += 1
             logging.warning('no source image: %s/%s', owner_user_id, task_id)
             continue
         if thumb_path and thumb_path.is_file() and thumb_path.stat().st_size > 0 and not args.overwrite:
@@ -69,7 +73,10 @@ def main() -> int:
             failed += 1
             logging.warning('generation failed: %s/%s', owner_user_id, task_id)
 
-    logging.info('scanned=%d generated=%d skipped=%d failed=%d', scanned, generated, skipped, failed)
+    print(
+        f'scanned={scanned} generated={generated} skipped={skipped} '
+        f'missing_source={missing_source} failed={failed}'
+    )
     return 1 if failed else 0
 
 
