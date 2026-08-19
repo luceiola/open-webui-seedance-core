@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ast
 import json
 import logging
 import mimetypes
@@ -22,6 +23,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
+from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 
 from open_webui.config import CACHE_DIR
@@ -43,6 +45,8 @@ TASK_CATALOG = TaskCatalog(CACHE_DIR / 'task_catalog.sqlite3')
 # Task metadata and source material packages remain local. Generated artifacts
 # may use a separately mounted volume configured by TASK_ARTIFACTS_ROOT.
 TASK_ARTIFACTS_ROOT_ENV = 'TASK_ARTIFACTS_ROOT'
+IMAGE_THUMBNAIL_MAX_EDGE = 540
+IMAGE_THUMBNAIL_JPEG_QUALITY = 85
 
 ARK_ENV_FILE_CANDIDATES: list[Path] = [
     Path(os.getenv('ARK_ENV_FILE', '')).expanduser().resolve() if os.getenv('ARK_ENV_FILE') else None,
@@ -814,6 +818,169 @@ def _archive_thumb_relpath(task_id: str) -> str:
     return f'task_thumbnails/{task_id}.jpg'
 
 
+def _parse_task_image_files(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(entry).strip() for entry in value if str(entry).strip()]
+    if not isinstance(value, str) or not value.strip():
+        return []
+    for parser in (json.loads, ast.literal_eval):
+        try:
+            parsed = parser(value)
+        except Exception:
+            continue
+        if isinstance(parsed, list):
+            return [str(entry).strip() for entry in parsed if str(entry).strip()]
+    return []
+
+
+def _relative_task_image_dir(user_id: str, image_dir: Path, roots: list[Path]) -> Optional[Path]:
+    for root in roots:
+        try:
+            return image_dir.relative_to(root)
+        except ValueError:
+            continue
+
+    marker = ('cache', 'material_packages', str(user_id))
+    parts = image_dir.parts
+    for index in range(len(parts) - len(marker), -1, -1):
+        if tuple(parts[index : index + len(marker)]) != marker:
+            continue
+        relative_parts = parts[index + len(marker) :]
+        if relative_parts and relative_parts[0] == 'task_vendor_artifacts':
+            return Path(*relative_parts)
+    return None
+
+
+def _resolve_task_image_sources(user_id: str, task_record: dict[str, Any]) -> list[Path]:
+    generation_params = task_record.get('generation_params')
+    if not isinstance(generation_params, dict):
+        return []
+
+    raw_dir = str(
+        generation_params.get('saved_image_dir')
+        or generation_params.get('image_output_dir')
+        or ''
+    ).strip()
+    if not raw_dir:
+        return []
+
+    image_dir = Path(raw_dir).expanduser()
+    if not image_dir.is_absolute():
+        return []
+    try:
+        image_dir = image_dir.resolve()
+    except Exception:
+        return []
+
+    roots: list[Path] = []
+    for builder in (_user_root_dir, _task_artifact_user_root_dir):
+        try:
+            root = builder(str(user_id), ensure_exists=False)
+        except TypeError:
+            root = builder(str(user_id))
+        roots.append(Path(root).resolve())
+    roots = list(dict.fromkeys(roots))
+    relative_dir = _relative_task_image_dir(str(user_id), image_dir, roots)
+    if relative_dir is None:
+        return []
+
+    candidate_dirs = [(root / relative_dir).resolve() for root in roots]
+    declared_files = _parse_task_image_files(generation_params.get('image_files'))
+    sources: list[Path] = []
+    seen: set[str] = set()
+
+    for candidate_dir in candidate_dirs:
+        if declared_files:
+            candidates = [candidate_dir / Path(name).name for name in declared_files]
+        else:
+            try:
+                candidates = sorted(
+                    path
+                    for path in candidate_dir.iterdir()
+                    if path.is_file() and SUPPORTED_EXTENSIONS.get(path.suffix.lower()) == 'image'
+                )
+            except OSError:
+                candidates = []
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+                resolved.relative_to(candidate_dir)
+            except (OSError, ValueError):
+                continue
+            key = str(resolved)
+            if key in seen or not resolved.is_file():
+                continue
+            seen.add(key)
+            sources.append(resolved)
+    return sources
+
+
+def _generate_image_thumbnail(image_path: Path, thumbnail_path: Path) -> bool:
+    thumbnail_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = thumbnail_path.with_suffix(f'{thumbnail_path.suffix}.part')
+    try:
+        with Image.open(image_path) as source:
+            source.seek(0)
+            image = ImageOps.exif_transpose(source)
+            image.thumbnail(
+                (IMAGE_THUMBNAIL_MAX_EDGE, IMAGE_THUMBNAIL_MAX_EDGE),
+                Image.Resampling.LANCZOS,
+            )
+            if image.mode in {'RGBA', 'LA'} or (image.mode == 'P' and 'transparency' in image.info):
+                rgba = image.convert('RGBA')
+                flattened = Image.new('RGB', rgba.size, 'white')
+                flattened.paste(rgba, mask=rgba.getchannel('A'))
+                image = flattened
+            elif image.mode != 'RGB':
+                image = image.convert('RGB')
+            image.save(
+                temp_path,
+                format='JPEG',
+                quality=IMAGE_THUMBNAIL_JPEG_QUALITY,
+                optimize=True,
+            )
+        if temp_path.stat().st_size <= 0:
+            return False
+        temp_path.replace(thumbnail_path)
+        return True
+    except Exception:
+        log.exception('Failed to generate image thumbnail from %s', image_path)
+        return False
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def ensure_image_task_thumbnail(
+    user_id: str,
+    task_record: dict[str, Any],
+    *,
+    overwrite: bool = False,
+) -> bool:
+    if str(task_record.get('artifact_kind') or '').strip().lower() != TASK_ARTIFACT_KIND_IMAGE:
+        return False
+    if not _is_succeeded_task_status(task_record.get('status')):
+        return False
+
+    task_id = str(task_record.get('task_id') or '').strip()
+    if not task_id:
+        return False
+    thumb_relpath = _archive_thumb_relpath(task_id)
+    thumb_path = _safe_resolve_under(_task_artifact_user_root_dir(user_id), thumb_relpath)
+    if not thumb_path:
+        return False
+    if thumb_path.is_file() and thumb_path.stat().st_size > 0 and not overwrite:
+        if task_record.get('thumbnail_path') != thumb_relpath:
+            task_record['thumbnail_path'] = thumb_relpath
+            return True
+        return False
+
+    image_sources = _resolve_task_image_sources(user_id, task_record)
+    if not image_sources or not _generate_image_thumbnail(image_sources[0], thumb_path):
+        return False
+    task_record['thumbnail_path'] = thumb_relpath
+    return True
+
+
 def _guess_video_extension(video_url: Optional[str]) -> str:
     if not video_url:
         return '.mp4'
@@ -912,7 +1079,8 @@ def _sync_task_serving_fields(user_id: str, task_record: dict[str, Any]) -> bool
             task_record['video_preview_url'] = None
             changed = True
 
-        next_thumb_url = primary_image_url or None
+        thumb_path = _task_file_from_relative(user_id, task_record.get('thumbnail_path'))
+        next_thumb_url = _build_task_thumbnail_url(task_id) if thumb_path else (primary_image_url or None)
         if task_record.get('thumbnail_url') != next_thumb_url:
             task_record['thumbnail_url'] = next_thumb_url
             changed = True
@@ -1519,6 +1687,8 @@ async def _archive_task_record_if_needed(
         if str(task_record.get('archive_status') or '').strip().upper() != ARCHIVE_STATUS_NOT_REQUIRED:
             task_record['archive_status'] = ARCHIVE_STATUS_NOT_REQUIRED
             changed = True
+        if ensure_image_task_thumbnail(owner_user_id, task_record):
+            changed = True
         if _sync_task_serving_fields(owner_user_id, task_record):
             changed = True
         if changed:
@@ -1792,6 +1962,7 @@ def _touch_task_record(
 
     if _normalize_task_defaults(current, owner_user_id=str(user_id)):
         current['updated_at'] = now
+    ensure_image_task_thumbnail(str(user_id), current)
     _sync_task_serving_fields(str(user_id), current)
     current['updated_at'] = now
     _save_task_record(user_id, task_id, current)

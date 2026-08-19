@@ -11,6 +11,7 @@ from typing import Optional
 
 import pytest
 from fastapi import HTTPException
+from PIL import Image
 from pydantic import BaseModel
 
 
@@ -1465,6 +1466,59 @@ def test_archive_succeeded_task_does_not_redownload(material_packages_router_mod
     assert result['video_download_url'] == material_module._build_task_download_url(task_id)
     assert result['video_preview_url'] == material_module._build_task_preview_url(task_id)
     assert result['thumbnail_url'] == material_module._build_task_thumbnail_url(task_id)
+
+
+def test_image_task_generates_small_thumbnail_and_serves_thumbnail_url(
+    material_packages_router_module,
+):
+    material_module = material_packages_router_module
+    user_id = 'user-1'
+    task_id = 'image-task-1'
+    source_dir = material_module._user_root_dir(user_id) / 'task_vendor_artifacts' / 'btn_image2' / task_id / 'images'
+    source_dir.mkdir(parents=True, exist_ok=True)
+    source_path = source_dir / 'image_001.png'
+    Image.new('RGB', (2400, 1200), 'red').save(source_path)
+
+    task_record = {
+        'task_id': task_id,
+        'artifact_kind': 'image',
+        'status': 'SUCCEEDED',
+        'generation_params': {
+            'saved_image_dir': str(source_dir),
+            'image_files': "['image_001.png']",
+        },
+        'primary_image_url': None,
+        'thumbnail_url': None,
+    }
+
+    assert material_module.ensure_image_task_thumbnail(user_id, task_record) is True
+    thumb_path = material_module._task_file_from_relative(user_id, task_record['thumbnail_path'])
+    assert thumb_path is not None and thumb_path.exists()
+    with Image.open(thumb_path) as thumbnail:
+        assert thumbnail.size == (540, 270)
+        assert thumbnail.format == 'JPEG'
+
+    assert material_module._sync_task_serving_fields(user_id, task_record) is True
+    assert task_record['thumbnail_url'] == material_module._build_task_thumbnail_url(task_id)
+
+
+def test_image_thumbnail_rejects_source_outside_trusted_roots(material_packages_router_module, tmp_path):
+    material_module = material_packages_router_module
+    outside_dir = tmp_path / 'outside' / 'images'
+    outside_dir.mkdir(parents=True)
+    Image.new('RGB', (100, 100), 'blue').save(outside_dir / 'image.png')
+    task_record = {
+        'task_id': 'image-task-outside',
+        'artifact_kind': 'image',
+        'status': 'SUCCEEDED',
+        'generation_params': {
+            'saved_image_dir': str(outside_dir),
+            'image_files': "['image.png']",
+        },
+    }
+
+    assert material_module.ensure_image_task_thumbnail('user-1', task_record) is False
+    assert 'thumbnail_path' not in task_record
 
 
 def test_deleted_task_media_routes_allow_admin_only(material_packages_router_module, tmp_path):

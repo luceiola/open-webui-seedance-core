@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""Generate missing Image2 task thumbnails without touching source images."""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+BACKEND_ROOT = REPO_ROOT / 'backend'
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
+from open_webui.routers import material_packages as material  # noqa: E402
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--user-id', help='Only process one owner user ID')
+    parser.add_argument('--limit', type=int, default=0, help='Maximum records to process; 0 means unlimited')
+    parser.add_argument('--overwrite', action='store_true', help='Regenerate existing thumbnails')
+    parser.add_argument('--dry-run', action='store_true', help='Report candidates without writing files or records')
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
+    scanned = 0
+    generated = 0
+    skipped = 0
+    failed = 0
+
+    for owner_user_id, path in material._iter_task_record_paths():
+        if args.user_id and owner_user_id != args.user_id:
+            continue
+        if args.limit and scanned >= args.limit:
+            break
+        scanned += 1
+        record = material._load_task_record_from_path(path)
+        if record is None or str(record.get('artifact_kind') or '').strip().lower() != material.TASK_ARTIFACT_KIND_IMAGE:
+            skipped += 1
+            continue
+
+        task_id = str(record.get('task_id') or path.stem)
+        thumb_relpath = material._archive_thumb_relpath(task_id)
+        thumb_path = material._task_file_from_relative(owner_user_id, thumb_relpath)
+        sources = material._resolve_task_image_sources(owner_user_id, record)
+        if not sources:
+            failed += 1
+            logging.warning('no source image: %s/%s', owner_user_id, task_id)
+            continue
+        if thumb_path and thumb_path.is_file() and thumb_path.stat().st_size > 0 and not args.overwrite:
+            skipped += 1
+            continue
+        if args.dry_run:
+            generated += 1
+            logging.info('would generate: %s/%s from %s', owner_user_id, task_id, sources[0])
+            continue
+
+        if material.ensure_image_task_thumbnail(owner_user_id, record, overwrite=args.overwrite):
+            material._sync_task_serving_fields(owner_user_id, record)
+            material._save_task_record(owner_user_id, task_id, record)
+            generated += 1
+            logging.info('generated: %s/%s', owner_user_id, task_id)
+        else:
+            failed += 1
+            logging.warning('generation failed: %s/%s', owner_user_id, task_id)
+
+    logging.info('scanned=%d generated=%d skipped=%d failed=%d', scanned, generated, skipped, failed)
+    return 1 if failed else 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
