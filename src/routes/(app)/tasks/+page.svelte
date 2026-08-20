@@ -89,7 +89,7 @@
 		return normalized || 'UNKNOWN';
 	};
 
-	const getTaskImageUrls = (task: GenerationTaskItem): string[] => {
+	const getTaskOutputImageUrls = (task: GenerationTaskItem): string[] => {
 		const candidates: string[] = [];
 		const appendIfPresent = (value?: string | null) => {
 			const text = String(value || '').trim();
@@ -101,9 +101,6 @@
 		if (Array.isArray(task.image_urls)) {
 			task.image_urls.forEach((value) => appendIfPresent(value));
 		}
-		if (String(task.artifact_kind || '').toLowerCase() === 'image') {
-			appendIfPresent(task.thumbnail_url);
-		}
 
 		return Array.from(new Set(candidates));
 	};
@@ -112,7 +109,7 @@
 		const thumb = String(task.thumbnail_url || '').trim();
 		if (thumb) return thumb;
 
-		const images = getTaskImageUrls(task);
+		const images = getTaskOutputImageUrls(task);
 		return images[0] || '';
 	};
 
@@ -122,7 +119,7 @@
 			.toLowerCase() === 'image';
 
 	const canTaskDownload = (task: GenerationTaskItem): boolean =>
-		isImageTask(task) ? getTaskImageUrls(task).length > 0 : Boolean(task.download_ready);
+		isImageTask(task) ? getTaskOutputImageUrls(task).length > 0 : Boolean(task.download_ready);
 
 	const taskRowKey = (task: GenerationTaskItem) =>
 		`${String(task.user_id || '')}::${String(task.task_id || '')}`;
@@ -390,7 +387,7 @@
 			let blob: Blob;
 			let filename: string;
 			if (isImageTask(task)) {
-				if (getTaskImageUrls(task).length <= 0) {
+				if (getTaskOutputImageUrls(task).length <= 0) {
 					toast.error('任务图片尚未就绪');
 					return;
 				}
@@ -529,14 +526,14 @@
 	$: selectedTaskParamEntries = selectedTask ? getGenerationParamEntries(selectedTask) : [];
 	$: selectedTaskIsFailed = selectedTask ? isFailedTask(selectedTask) : false;
 	$: selectedTaskFailureReason = selectedTask ? getFailureReason(selectedTask) : '';
-	$: selectedTaskImageUrls = selectedTask ? getTaskImageUrls(selectedTask) : [];
+	$: selectedTaskImageUrls = selectedTask ? getTaskOutputImageUrls(selectedTask) : [];
 	$: if (selectedTaskImageUrls.length === 0) {
 		selectedTaskImageIndex = 0;
 	} else if (selectedTaskImageIndex >= selectedTaskImageUrls.length || selectedTaskImageIndex < 0) {
 		selectedTaskImageIndex = 0;
 	}
 	$: selectedTaskPreviewImageUrl = selectedTask
-		? selectedTaskImageUrls[selectedTaskImageIndex] || getTaskPreviewImageUrl(selectedTask)
+		? selectedTaskImageUrls[selectedTaskImageIndex] || ''
 		: '';
 	$: if (initialized) {
 		selectedUserId;
