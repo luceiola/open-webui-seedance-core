@@ -699,6 +699,14 @@ TASK_ARCHIVE_FINAL_STATUSES: set[str] = {
 TASK_ARCHIVE_MAX_RETRIES = max(0, _get_int_env('TASK_ARCHIVE_MAX_RETRIES', 12))
 TASK_ARCHIVE_POLL_INTERVAL_SECONDS = max(2, _get_int_env('TASK_ARCHIVE_POLL_INTERVAL_SECONDS', 8))
 TASK_ARCHIVE_POLL_MAX_SECONDS = max(30, _get_int_env('TASK_ARCHIVE_POLL_MAX_SECONDS', 1800))
+RUNNINGHUB_STATUS_REFRESH_INTERVAL_SECONDS = max(
+    5, _get_int_env('RUNNINGHUB_STATUS_REFRESH_INTERVAL_SECONDS', 15)
+)
+RUNNINGHUB_STATUS_REFRESH_TIMEOUT_SECONDS = max(
+    10, _get_int_env('RUNNINGHUB_STATUS_REFRESH_TIMEOUT_SECONDS', 60)
+)
+RUNNINGHUB_STATUS_REFRESH_MAX_TASKS = max(1, _get_int_env('RUNNINGHUB_STATUS_REFRESH_MAX_TASKS', 100))
+RUNNINGHUB_STATUS_REFRESH_CONCURRENCY = max(1, _get_int_env('RUNNINGHUB_STATUS_REFRESH_CONCURRENCY', 3))
 
 _LAST_SOFT_DELETE_CLEANUP_AT = 0
 _ACTIVE_ARCHIVE_POLLERS: dict[str, asyncio.Task] = {}
@@ -1406,6 +1414,143 @@ async def _query_generation_task_from_happyhorse(task_id: str, timeout_seconds: 
         return resp.json()
 
 
+def _is_runninghub_provider(provider: Optional[str]) -> bool:
+    return str(provider or '').strip().lower().startswith('runninghub_')
+
+
+def _extract_runninghub_video_url(payload: Any) -> Optional[str]:
+    query = payload.get('query') if isinstance(payload, dict) and isinstance(payload.get('query'), dict) else {}
+    results = query.get('results') if isinstance(query.get('results'), list) else []
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        if str(result.get('outputType') or '').strip().lower() != 'mp4':
+            continue
+        url = str(result.get('url') or '').strip()
+        if url.startswith(('http://', 'https://')):
+            return url
+    return None
+
+
+def _extract_runninghub_error(payload: Any) -> tuple[Optional[str], Optional[str]]:
+    query = payload.get('query') if isinstance(payload, dict) and isinstance(payload.get('query'), dict) else {}
+    error_code = str(query.get('errorCode') or '').strip() or None
+    error_message = str(query.get('errorMessage') or '').strip() or None
+    if not error_message and isinstance(query.get('failedReason'), dict):
+        error_message = str(query['failedReason'].get('message') or '').strip() or None
+    return error_code, error_message
+
+
+async def _query_runninghub_task(
+    user_id: str,
+    task_record: dict[str, Any],
+    *,
+    timeout_seconds: int = RUNNINGHUB_STATUS_REFRESH_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    provider_task_id = str(task_record.get('provider_task_id') or task_record.get('task_id') or '').strip()
+    if not provider_task_id:
+        raise RuntimeError('RunningHub task has no provider_task_id')
+
+    resolved = await _resolve_provider_credential(
+        provider='runninghub',
+        user_id=str(user_id),
+        preferred_alias=str(task_record.get('credential_alias') or '').strip() or None,
+    )
+    au_bin = str(os.getenv('AU_BIN') or _read_env_value_from_file('AU_BIN') or '').strip()
+    au_workdir = str(os.getenv('AU_WORKDIR') or _read_env_value_from_file('AU_WORKDIR') or '').strip()
+    if not au_bin or not au_workdir:
+        raise RuntimeError('AU_BIN/AU_WORKDIR is not configured')
+
+    child_env = os.environ.copy()
+    child_env['RUNNINGHUB_API_KEY'] = str(resolved.get('api_key') or '')
+    command = [
+        au_bin,
+        'vendor',
+        'rh-query-task',
+        '--task-id',
+        provider_task_id,
+        '--no-wait',
+        '--quiet',
+        '--full-json',
+        '--timeout-seconds',
+        str(max(10, int(timeout_seconds))),
+    ]
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        cwd=au_workdir,
+        env=child_env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=max(15, int(timeout_seconds) + 15))
+    if process.returncode != 0:
+        detail = stderr.decode('utf-8', errors='replace').strip()[-500:]
+        raise RuntimeError(f'RunningHub query exited with {process.returncode}: {detail}')
+    try:
+        payload = json.loads(stdout.decode('utf-8'))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError('RunningHub query returned invalid JSON') from exc
+    query = payload.get('query') if isinstance(payload, dict) and isinstance(payload.get('query'), dict) else {}
+    returned_task_id = str(query.get('taskId') or '').strip()
+    if returned_task_id != provider_task_id:
+        raise RuntimeError(
+            f'RunningHub query task id mismatch: expected {provider_task_id}, '
+            f'got {returned_task_id or "<empty>"}'
+        )
+    return payload
+
+
+async def _refresh_task_record_from_runninghub(
+    user_id: str,
+    task_record: dict[str, Any],
+    *,
+    timeout_seconds: int = RUNNINGHUB_STATUS_REFRESH_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    task_id = str(task_record.get('task_id') or '').strip()
+    try:
+        payload = await _query_runninghub_task(user_id, task_record, timeout_seconds=timeout_seconds)
+    except Exception as exc:
+        log.warning('Refresh RunningHub task failed for %s: %s', task_id or '<unknown>', exc)
+        return task_record
+
+    query = payload.get('query') if isinstance(payload, dict) and isinstance(payload.get('query'), dict) else {}
+    raw_status = str(query.get('status') or '').strip().upper()
+    status = {
+        'SUCCESS': 'SUCCEEDED',
+        'COMPLETED': 'SUCCEEDED',
+        'FAILED': 'FAILED',
+        'ERROR': 'FAILED',
+        'QUEUED': 'PENDING',
+        'PENDING': 'PENDING',
+        'RUNNING': 'RUNNING',
+    }.get(raw_status)
+    if not status:
+        log.warning('Unknown RunningHub status for %s: %s', task_id or '<unknown>', raw_status or '<empty>')
+        return task_record
+
+    current_status = _normalize_task_status(task_record.get('status'))
+    video_url = _extract_runninghub_video_url(payload)
+    error_code, error_message = _extract_runninghub_error(payload)
+    if status == current_status and status not in {'SUCCEEDED', 'FAILED'}:
+        return task_record
+
+    refreshed = _touch_task_record(
+        user_id,
+        task_id,
+        status=status,
+        finished_at=int(time.time()) if status in {'SUCCEEDED', 'FAILED'} else None,
+        video_url=video_url,
+        error_code=error_code,
+        error_message=error_message,
+        raw_last_response=payload,
+        credential_alias=str(task_record.get('credential_alias') or '').strip() or None,
+        routing_group_id=str(task_record.get('routing_group_id') or '').strip() or None,
+    )
+    if status == 'SUCCEEDED' and video_url:
+        _spawn_task_archive_poller(user_id, task_id)
+    return refreshed
+
+
 def _query_generation_task_from_gpt_image2_local(user_id: str, task_id: str) -> dict[str, Any]:
     raw_store_dir = str(os.getenv('GPT_IMAGE2_TASK_STORE_DIR') or '').strip()
     if raw_store_dir:
@@ -1436,6 +1581,13 @@ async def _refresh_task_record_from_ark(
     *,
     timeout_seconds: int = 120,
 ) -> dict[str, Any]:
+    if _is_runninghub_provider(task_record.get('provider')):
+        return await _refresh_task_record_from_runninghub(
+            user_id,
+            task_record,
+            timeout_seconds=timeout_seconds,
+        )
+
     task_id = str(task_record.get('task_id') or '').strip()
     if not task_id:
         return task_record
@@ -1494,6 +1646,61 @@ async def _refresh_task_record_from_ark(
         raw_last_response=raw,
     )
     return refreshed
+
+
+async def reconcile_runninghub_tasks_once() -> int:
+    """Refresh active RunningHub tasks so status sync survives request lifetimes."""
+    ensure_task_catalog()
+    rows, _ = TASK_CATALOG.query(
+        include_deleted=False,
+        deletion_status='active',
+        offset=0,
+        limit=RUNNINGHUB_STATUS_REFRESH_MAX_TASKS,
+    )
+    candidates = [
+        (owner_user_id, item)
+        for owner_user_id, item in rows
+        if _is_runninghub_provider(item.get('provider'))
+        and str(item.get('status') or '').strip().upper() in {'PENDING', 'RUNNING'}
+        and not _is_soft_deleted(item)
+    ]
+    if not candidates:
+        return 0
+
+    semaphore = asyncio.Semaphore(RUNNINGHUB_STATUS_REFRESH_CONCURRENCY)
+
+    async def refresh_one(owner_user_id: str, item: dict[str, Any]) -> int:
+        async with semaphore:
+            before_status = _normalize_task_status(item.get('status'))
+            refreshed = await _refresh_task_record_from_runninghub(
+                owner_user_id,
+                item,
+                timeout_seconds=RUNNINGHUB_STATUS_REFRESH_TIMEOUT_SECONDS,
+            )
+            return int(
+                before_status != _normalize_task_status(refreshed.get('status'))
+                or bool(_extract_runninghub_video_url(refreshed.get('raw_last_response')))
+            )
+
+    results = await asyncio.gather(
+        *(refresh_one(owner_user_id, item) for owner_user_id, item in candidates),
+        return_exceptions=True,
+    )
+    return sum(result for result in results if isinstance(result, int))
+
+
+async def runninghub_task_recovery_loop() -> None:
+    """Continuously reconcile non-terminal RunningHub tasks across restarts."""
+    while True:
+        try:
+            changed = await reconcile_runninghub_tasks_once()
+            if changed:
+                log.info('RunningHub task recovery updated %s task(s)', changed)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception('RunningHub task recovery cycle failed')
+        await asyncio.sleep(RUNNINGHUB_STATUS_REFRESH_INTERVAL_SECONDS)
 
 
 def _extract_request_id_from_text(text: str) -> Optional[str]:

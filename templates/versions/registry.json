@@ -72,6 +72,20 @@
         "version": "v1.0.1"
       }
     },
+    "runninghub_wan3_vendor": {
+      "tool": {
+        "file": "templates/runninghub_wan3_tool.py",
+        "version": "0.1.0"
+      },
+      "skill": {
+        "file": "templates/skills/runninghub-wan3-execution-skill/SKILL.md",
+        "version": "v1.0.0"
+      },
+      "system_prompt": {
+        "file": "templates/prompts/runninghub_wan3_system_prompt.txt",
+        "version": "v1.0.0"
+      }
+    },
     "btn_image2_vendor": {
       "tool": {
         "file": "templates/btn_image2_tool.py",

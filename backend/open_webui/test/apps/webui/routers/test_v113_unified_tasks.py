@@ -380,6 +380,121 @@ def test_extract_error_info_supports_runninghub_final_response(material_packages
     }
 
 
+def test_runninghub_refresh_maps_success_and_persists_result(material_packages_router_module, monkeypatch):
+    module = material_packages_router_module
+    payload = {
+        'query': {
+            'taskId': 'rh-task-1',
+            'status': 'SUCCESS',
+            'results': [{'outputType': 'mp4', 'url': 'https://media.example.com/output.mp4'}],
+        }
+    }
+    saved: dict[str, object] = {}
+
+    async def fake_query(user_id, task_record, *, timeout_seconds):
+        assert user_id == 'user-1'
+        assert task_record['provider_task_id'] == 'rh-task-1'
+        return payload
+
+    def fake_touch(user_id, task_id, **kwargs):
+        saved.update(kwargs)
+        return {**task_record, 'status': kwargs['status'], 'video_url': kwargs['video_url']}
+
+    spawned: list[tuple[str, str]] = []
+    monkeypatch.setattr(module, '_query_runninghub_task', fake_query)
+    monkeypatch.setattr(module, '_touch_task_record', fake_touch)
+    monkeypatch.setattr(
+        module,
+        '_spawn_task_archive_poller',
+        lambda user_id, task_id: spawned.append((user_id, task_id)),
+    )
+
+    task_record = {
+        'task_id': 'rh-task-1',
+        'provider_task_id': 'rh-task-1',
+        'provider': 'runninghub_seedance2',
+        'status': 'RUNNING',
+        'credential_alias': 'k2',
+        'routing_group_id': 'group-2',
+    }
+    refreshed = asyncio.run(module._refresh_task_record_from_runninghub('user-1', task_record))
+
+    assert refreshed['status'] == 'SUCCEEDED'
+    assert saved['status'] == 'SUCCEEDED'
+    assert saved['video_url'] == 'https://media.example.com/output.mp4'
+    assert saved['raw_last_response'] == payload
+    assert spawned == [('user-1', 'rh-task-1')]
+
+
+def test_runninghub_refresh_does_not_rewrite_non_terminal_status(material_packages_router_module, monkeypatch):
+    module = material_packages_router_module
+    payload = {'query': {'taskId': 'rh-task-2', 'status': 'RUNNING', 'results': None}}
+    touch_called = False
+
+    async def fake_query(user_id, task_record, *, timeout_seconds):
+        return payload
+
+    def fake_touch(*args, **kwargs):
+        nonlocal touch_called
+        touch_called = True
+        return kwargs
+
+    monkeypatch.setattr(module, '_query_runninghub_task', fake_query)
+    monkeypatch.setattr(module, '_touch_task_record', fake_touch)
+
+    task_record = {
+        'task_id': 'rh-task-2',
+        'provider_task_id': 'rh-task-2',
+        'provider': 'runninghub_hailuo_h3',
+        'status': 'RUNNING',
+    }
+    refreshed = asyncio.run(module._refresh_task_record_from_runninghub('user-1', task_record))
+
+    assert refreshed is task_record
+    assert touch_called is False
+
+
+def test_runninghub_recovery_scans_only_active_non_terminal_tasks(material_packages_router_module, monkeypatch):
+    module = material_packages_router_module
+    active = {
+        'task_id': 'rh-active',
+        'provider': 'runninghub_seedance25',
+        'status': 'RUNNING',
+        'deleted_at': 0,
+    }
+    terminal = {
+        'task_id': 'rh-done',
+        'provider': 'runninghub_seedance2',
+        'status': 'SUCCEEDED',
+        'deleted_at': 0,
+    }
+    deleted = {
+        'task_id': 'rh-deleted',
+        'provider': 'runninghub_hailuo_h3',
+        'status': 'RUNNING',
+        'deleted_at': 123,
+    }
+
+    class Catalog:
+        def query(self, **kwargs):
+            return [('user-1', active), ('user-1', terminal), ('user-1', deleted)], 3
+
+    refreshed_ids: list[str] = []
+
+    async def fake_refresh(owner_user_id, item, *, timeout_seconds):
+        refreshed_ids.append(item['task_id'])
+        return {**item, 'status': 'SUCCEEDED', 'raw_last_response': {}}
+
+    monkeypatch.setattr(module, 'TASK_CATALOG', Catalog())
+    monkeypatch.setattr(module, 'ensure_task_catalog', lambda: None)
+    monkeypatch.setattr(module, '_refresh_task_record_from_runninghub', fake_refresh)
+
+    changed = asyncio.run(module.reconcile_runninghub_tasks_once())
+
+    assert changed == 1
+    assert refreshed_ids == ['rh-active']
+
+
 def _run(coro):
     return asyncio.run(coro)
 

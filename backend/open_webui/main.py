@@ -681,6 +681,10 @@ async def lifespan(app: FastAPI):
     from open_webui.utils.automations import scheduler_worker_loop
 
     asyncio.create_task(scheduler_worker_loop(app))
+    app.state.runninghub_task_recovery_worker = asyncio.create_task(
+        material_packages.runninghub_task_recovery_loop(),
+        name='runninghub-task-recovery',
+    )
 
     if app.state.config.ENABLE_BASE_MODELS_CACHE:
         try:
@@ -745,6 +749,8 @@ async def lifespan(app: FastAPI):
 
     if hasattr(app.state, 'redis_task_command_listener'):
         app.state.redis_task_command_listener.cancel()
+    if hasattr(app.state, 'runninghub_task_recovery_worker'):
+        app.state.runninghub_task_recovery_worker.cancel()
 
 
 app = FastAPI(

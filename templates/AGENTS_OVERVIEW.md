@@ -68,7 +68,20 @@
   - `get_generation_task_status`
   - `wait_generation_task`
 
-## 6) BTN Image2 图片 Agent（au vendor）
+## 6) RunningHub WAN 3.0 视频 Agent（au vendor）
+
+- 用途：固定调用 `au vendor rh-wan3-video`，支持纯文生、普通参考生视频和显式首尾帧图生视频。
+- 默认参数：所有模式均为 `720P`、`adaptive`、5 秒并生成音频。
+- System Prompt：`prompts/runninghub_wan3_system_prompt.txt`
+- Skill：`skills/runninghub-wan3-execution-skill/SKILL.md`
+- Tool：`runninghub_wan3_tool.py`
+- 关键入口函数：
+  - `generate_video_with_runninghub_wan3`
+  - `list_generation_tasks`
+  - `get_generation_task_status`
+  - `wait_generation_task`
+
+## 7) BTN Image2 图片 Agent（au vendor）
 
 - 用途：调用 `au vendor btn-image2-gen / btn-image2-edit`，默认 9:16 竖屏尺寸与 auto 质量，支持多图参考并写入统一任务中心。
 - 说明：该 Agent 为直接等待完成型，不提供查询方法。

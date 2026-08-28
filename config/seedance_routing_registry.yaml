@@ -140,6 +140,31 @@
       }
     },
     {
+      "rule_id": "R-RHWAN3-001",
+      "status": "active",
+      "priority": 130,
+      "intent": "runninghub_wan3_video_generate",
+      "trigger": {
+        "mode": "explicit_or_detected",
+        "conditions": [
+          "contains_video_generation_intent",
+          "contains_wan3_or_wan_3_or_wan_video_intent"
+        ]
+      },
+      "route": {
+        "skill": "runninghub-wan3-execution-skill",
+        "tool": "generate_video_with_runninghub_wan3",
+        "kb_scope": [],
+        "template_id": "",
+        "params": {
+          "resolution": "720P",
+          "ratio": "adaptive",
+          "duration": "5",
+          "generate_audio": true
+        }
+      }
+    },
+    {
       "rule_id": "R-BTNI-001",
       "status": "active",
       "priority": 100,
