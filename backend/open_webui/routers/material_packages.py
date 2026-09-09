@@ -707,6 +707,7 @@ RUNNINGHUB_STATUS_REFRESH_TIMEOUT_SECONDS = max(
 )
 RUNNINGHUB_STATUS_REFRESH_MAX_TASKS = max(1, _get_int_env('RUNNINGHUB_STATUS_REFRESH_MAX_TASKS', 100))
 RUNNINGHUB_STATUS_REFRESH_CONCURRENCY = max(1, _get_int_env('RUNNINGHUB_STATUS_REFRESH_CONCURRENCY', 3))
+TASK_STALE_TIMEOUT_SECONDS = max(3600, _get_int_env('TASK_STALE_TIMEOUT_SECONDS', 86400))
 
 _LAST_SOFT_DELETE_CLEANUP_AT = 0
 _ACTIVE_ARCHIVE_POLLERS: dict[str, asyncio.Task] = {}
@@ -1660,8 +1661,8 @@ async def reconcile_runninghub_tasks_once() -> int:
     candidates = [
         (owner_user_id, item)
         for owner_user_id, item in rows
-        if _is_runninghub_provider(item.get('provider'))
-        and str(item.get('status') or '').strip().upper() in {'PENDING', 'RUNNING'}
+        if str(item.get('status') or '').strip().upper() in {'PENDING', 'RUNNING'}
+        and str(item.get('provider') or '').strip().lower() in {'ark', 'happyhorse', 'runninghub_seedance2', 'runninghub_seedance25', 'runninghub_wan3', 'runninghub_hailuo_h3', 'openai_image2', 'gpt_image2'}
         and not _is_soft_deleted(item)
     ]
     if not candidates:
@@ -1672,11 +1673,29 @@ async def reconcile_runninghub_tasks_once() -> int:
     async def refresh_one(owner_user_id: str, item: dict[str, Any]) -> int:
         async with semaphore:
             before_status = _normalize_task_status(item.get('status'))
-            refreshed = await _refresh_task_record_from_runninghub(
+            refreshed = await _refresh_task_record_from_ark(
                 owner_user_id,
                 item,
                 timeout_seconds=RUNNINGHUB_STATUS_REFRESH_TIMEOUT_SECONDS,
             )
+            refreshed_status = _normalize_task_status(refreshed.get('status'))
+            last_progress = int(item.get('updated_at') or item.get('created_at') or 0)
+            if (
+                refreshed_status in {'pending', 'running'}
+                and last_progress > 0
+                and int(time.time()) - last_progress >= TASK_STALE_TIMEOUT_SECONDS
+            ):
+                refreshed = _touch_task_record(
+                    owner_user_id,
+                    str(item.get('task_id') or ''),
+                    status='FAILED',
+                    finished_at=int(time.time()),
+                    error_code='TASK_TIMEOUT',
+                    error_message='运行超过24小时，自动停止',
+                    raw_last_response=refreshed.get('raw_last_response'),
+                )
+                log.warning('Marked stale task as failed after %ss: %s', TASK_STALE_TIMEOUT_SECONDS, item.get('task_id'))
+                refreshed_status = 'failed'
             return int(
                 before_status != _normalize_task_status(refreshed.get('status'))
                 or bool(_extract_runninghub_video_url(refreshed.get('raw_last_response')))
@@ -3024,7 +3043,7 @@ async def upload_material_package(
             manifest=manifest,
             zip_path=zip_path,
         )
-        return _finalize_manifest(
+        return await asyncio.to_thread(_finalize_manifest,
             user_id=str(user.id),
             package_id=package_id,
             manifest_path=manifest_path,
@@ -3083,7 +3102,7 @@ async def create_material_package_from_chat_upload(
                 manifest=manifest,
                 zip_path=Path(str(source.get('local_path'))).expanduser().resolve(),
             )
-            return _finalize_manifest(
+            return await asyncio.to_thread(_finalize_manifest,
                 user_id=str(user.id),
                 package_id=package_id,
                 manifest_path=manifest_path,
@@ -3138,7 +3157,7 @@ async def create_material_package_from_chat_upload(
             manifest=manifest,
             file_items=resolved_uploads,
         )
-        return _finalize_manifest(
+        return await asyncio.to_thread(_finalize_manifest,
             user_id=str(user.id),
             package_id=package_id,
             manifest_path=manifest_path,

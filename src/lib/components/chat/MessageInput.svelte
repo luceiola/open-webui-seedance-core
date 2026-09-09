@@ -53,7 +53,7 @@
 		getWeekday
 	} from '$lib/utils';
 	import { uploadFile } from '$lib/apis/files';
-	import { createMediaAssetsFromUploads } from '$lib/apis/media-assets';
+	import { createMediaAssetsFromUploads, getMediaUploadJob } from '$lib/apis/media-assets';
 	import { generateAutoCompletion } from '$lib/apis';
 	import { deleteFileById } from '$lib/apis/files';
 	import { getChatById } from '$lib/apis/chats';
@@ -814,9 +814,24 @@
 			const result = await createMediaAssetsFromUploads(localStorage.token, {
 				uploads: uploadedItems
 			});
+			let completed = { ...result, uploaded: [], failed: [...(result?.failed ?? [])] };
+			for (const jobId of result?.jobs ?? []) {
+				for (let attempt = 0; attempt < 180; attempt += 1) {
+					const job = await getMediaUploadJob(localStorage.token, jobId);
+					if (job.status === 'SUCCEEDED' || job.status === 'FAILED') {
+						completed = {
+							...completed,
+							uploaded: [...(completed.uploaded ?? []), ...(job.uploaded ?? [])],
+							failed: [...(completed.failed ?? []), ...(job.failed ?? [])]
+						};
+						break;
+					}
+					await new Promise((resolve) => setTimeout(resolve, 2000));
+				}
+			}
 
-			const uploadedCount = result?.uploaded?.length ?? 0;
-			const failedCount = (result?.failed?.length ?? 0) + failedNames.length;
+			const uploadedCount = completed?.uploaded?.length ?? 0;
+			const failedCount = (completed?.failed?.length ?? 0) + failedNames.length;
 			if (uploadedCount > 0) {
 				toast.success(
 					$i18n.t('Assets uploaded: {{count}}', {
@@ -833,7 +848,7 @@
 			}
 
 			if (uploadedCount > 0) {
-				const names = (result?.uploaded ?? [])
+				const names = (completed?.uploaded ?? [])
 					.map((asset) => getMediaAssetReferenceName(asset))
 					.filter((name) => !!name);
 				const dedupedNames = Array.from(new Set(names));

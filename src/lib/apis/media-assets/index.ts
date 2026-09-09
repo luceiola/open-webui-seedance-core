@@ -75,6 +75,7 @@ export const createMediaAssetsFromUploads = async (
 	ok: boolean;
 	uploaded: MediaAssetItem[];
 	failed: Array<{ filename: string; error: string }>;
+	jobs: string[];
 	count: number;
 }> => {
 	let error = null;
@@ -99,4 +100,20 @@ export const createMediaAssetsFromUploads = async (
 
 	if (error) throw error;
 	return res;
+};
+
+export const getMediaUploadJob = async (
+	token: string,
+	jobId: string
+): Promise<{
+	job_id: string;
+	status: string;
+	uploaded: MediaAssetItem[];
+	failed: Array<{ filename: string; error: string }>;
+}> => {
+	const res = await fetch(`${WEBUI_API_BASE_URL}/media-assets/upload-jobs/${encodeURIComponent(jobId)}`, {
+		headers: { Accept: 'application/json', authorization: `Bearer ${token}` }
+	});
+	if (!res.ok) throw await res.json();
+	return res.json();
 };

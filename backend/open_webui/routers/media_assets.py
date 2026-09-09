@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import mimetypes
 import os
@@ -19,11 +20,13 @@ from open_webui.models.files import Files
 from open_webui.models.users import UserModel
 from open_webui.storage.provider import Storage
 from open_webui.utils.auth import get_verified_user
+from open_webui.utils.media_upload_queue import MediaUploadQueue
 
 router = APIRouter()
 
 MEDIA_ASSETS_DIR = CACHE_DIR / 'media_assets'
 MEDIA_ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+MEDIA_UPLOAD_QUEUE = MediaUploadQueue(CACHE_DIR / 'media_upload_queue.sqlite3')
 
 ARK_ENV_FILE_CANDIDATES: list[Path] = [
     Path(os.getenv('ARK_ENV_FILE', '')).expanduser().resolve() if os.getenv('ARK_ENV_FILE') else None,
@@ -81,6 +84,13 @@ class MediaAssetUrlResponse(BaseModel):
     asset_id: str
     url: str
     expires_in: int
+
+
+class MediaUploadJobResponse(BaseModel):
+    job_id: str
+    status: str
+    uploaded: list[MediaAssetItem] = Field(default_factory=list)
+    failed: list[dict[str, str]] = Field(default_factory=list)
 
 
 class UploadSourceItem(BaseModel):
@@ -217,6 +227,82 @@ def _list_assets(user_id: str) -> list[dict[str, Any]]:
         except Exception:
             continue
     return rows
+
+
+def _upload_media_asset_job(payload: dict[str, Any]) -> None:
+    user_id = str(payload['user_id'])
+    asset_id = str(payload['asset_id'])
+    row = _load_asset(user_id, asset_id)
+    local_path = Path(str(payload['local_path']))
+    if not local_path.is_file():
+        raise RuntimeError('Staged media file not found')
+    try:
+        tos_ctx = _get_tos_context(required=True)
+        _upload_file_to_tos(
+            tos_ctx,
+            local_path=local_path,
+            object_key=str(row['tos_key']),
+            mime_type=row.get('mime_type'),
+        )
+    except Exception as exc:
+        row['tos_status'] = 'failed'
+        row['tos_error'] = str(exc)
+        row['updated_at'] = int(time.time())
+        _save_asset(user_id, asset_id, row)
+        raise
+    row['status'] = 'active'
+    row['tos_status'] = 'active'
+    row['tos_error'] = None
+    row['updated_at'] = int(time.time())
+    _save_asset(user_id, asset_id, row)
+    try:
+        local_path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def start_media_upload_worker() -> asyncio.Task:
+    return asyncio.create_task(
+        MEDIA_UPLOAD_QUEUE.run({'media_asset': _upload_media_asset_job}),
+        name='media-upload-worker',
+    )
+
+
+def _enqueue_media_asset(
+    *, user_id: str, chat_id: Optional[str], local_path: Path,
+    original_filename: str, mime_type: Optional[str], max_file_bytes: int, max_file_mb: int,
+) -> tuple[dict[str, Any], str]:
+    if not local_path.is_file():
+        raise HTTPException(status_code=400, detail='File not found')
+    relative_path = _normalize_relative_path(original_filename, fallback=local_path.name)
+    media_type = _media_type_for_filename(relative_path) or _media_type_for_mime(mime_type)
+    if not media_type:
+        raise HTTPException(status_code=400, detail='Unsupported media type')
+    size_bytes = int(local_path.stat().st_size)
+    if size_bytes <= 0:
+        raise HTTPException(status_code=400, detail='Empty file')
+    if size_bytes > max_file_bytes:
+        raise HTTPException(status_code=400, detail=f'File exceeds max size ({max_file_mb}MB)')
+    final_mime_type = mime_type or mimetypes.guess_type(relative_path)[0] or 'application/octet-stream'
+    asset_id = f'asset_{uuid.uuid4().hex[:16]}'
+    now = int(time.time())
+    cfg = _get_media_tos_config(required=True)
+    row = {
+        'asset_id': asset_id, 'user_id': user_id, 'chat_id': chat_id,
+        'display_name': relative_path, 'relative_path': relative_path,
+        'original_filename': original_filename or relative_path, 'media_type': media_type,
+        'mime_type': final_mime_type, 'size_bytes': size_bytes, 'status': 'pending',
+        'tos_key': _build_tos_object_key(cfg['prefix'], user_id, asset_id, relative_path),
+        'tos_status': 'pending', 'tos_error': None, 'created_at': now, 'updated_at': now,
+    }
+    _save_asset(user_id, asset_id, row)
+    job_id = MEDIA_UPLOAD_QUEUE.enqueue(
+        user_id=user_id, kind='media_asset',
+        payload={'user_id': user_id, 'asset_id': asset_id, 'local_path': str(local_path)},
+    )
+    row['upload_job_id'] = job_id
+    _save_asset(user_id, asset_id, row)
+    return row, job_id
 
 
 async def _resolve_upload_source_for_user(item: UploadSourceItem, user_id: str) -> dict[str, Any]:
@@ -478,7 +564,7 @@ def _create_media_asset_record_from_local_file(
     return row, None
 
 
-@router.post('/upload')
+@router.post('/upload', status_code=status.HTTP_202_ACCEPTED)
 async def upload_media_assets(
     files: list[UploadFile] = File(...),
     chat_id: Optional[str] = Form(default=None),
@@ -492,6 +578,7 @@ async def upload_media_assets(
     max_file_bytes = max(1, max_file_mb) * 1024 * 1024
 
     uploaded: list[dict[str, Any]] = []
+    jobs: list[str] = []
     failed: list[dict[str, Any]] = []
 
     for file in files:
@@ -502,33 +589,35 @@ async def upload_media_assets(
             continue
 
         tmp_path: Optional[Path] = None
+        queued_this_file = False
         try:
+            staging_dir = _user_dir(str(user.id)) / 'staging'
+            staging_dir.mkdir(parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(
                 prefix='media_asset_',
                 suffix=Path(original_name or '').suffix,
                 delete=False,
+                dir=staging_dir,
             ) as tmp:
-                tmp.write(content)
                 tmp_path = Path(tmp.name)
-            row, error = _create_media_asset_record_from_local_file(
+            await asyncio.to_thread(tmp_path.write_bytes, content)
+            row, job_id = _enqueue_media_asset(
                 user_id=str(user.id),
                 chat_id=chat_id,
                 local_path=tmp_path,
                 original_filename=original_name or tmp_path.name,
                 mime_type=file.content_type,
-                tos_ctx=tos_ctx,
                 max_file_bytes=max_file_bytes,
                 max_file_mb=max_file_mb,
             )
-            if error or row is None:
-                failed.append({'filename': original_name or tmp_path.name, 'error': error or 'Upload failed'})
-                continue
             uploaded.append(row)
+            jobs.append(job_id)
+            queued_this_file = True
         except Exception as e:
             failed.append({'filename': original_name or 'unknown', 'error': str(e)})
             continue
         finally:
-            if tmp_path and tmp_path.exists():
+            if tmp_path and tmp_path.exists() and not queued_this_file:
                 try:
                     tmp_path.unlink()
                 except Exception:
@@ -538,6 +627,7 @@ async def upload_media_assets(
         'ok': True,
         'uploaded': uploaded,
         'failed': failed,
+        'jobs': jobs,
         'count': len(uploaded),
     }
 
@@ -566,7 +656,7 @@ async def list_media_assets(
     return [MediaAssetItem(**item) for item in filtered[offset : offset + limit]]
 
 
-@router.post('/from-upload')
+@router.post('/from-upload', status_code=status.HTTP_202_ACCEPTED)
 async def create_media_assets_from_chat_upload(
     form_data: CreateMediaAssetsFromUploadRequest,
     user: UserModel = Depends(get_verified_user),
@@ -592,6 +682,7 @@ async def create_media_assets_from_chat_upload(
     max_file_bytes = max(1, max_file_mb) * 1024 * 1024
 
     uploaded: list[dict[str, Any]] = []
+    jobs: list[str] = []
     failed: list[dict[str, Any]] = []
 
     resolved_uploads: list[dict[str, Any]] = []
@@ -608,25 +699,23 @@ async def create_media_assets_from_chat_upload(
         )
         mime_type = source.get('mime_type')
 
-        row, error = _create_media_asset_record_from_local_file(
+        row, job_id = _enqueue_media_asset(
             user_id=str(user.id),
             chat_id=form_data.chat_id,
             local_path=local_path,
             original_filename=original_name,
             mime_type=mime_type,
-            tos_ctx=tos_ctx,
             max_file_bytes=max_file_bytes,
             max_file_mb=max_file_mb,
         )
-        if error or row is None:
-            failed.append({'filename': original_name, 'error': error or 'Upload failed'})
-            continue
         uploaded.append(row)
+        jobs.append(job_id)
 
     return {
         'ok': True,
         'uploaded': uploaded,
         'failed': failed,
+        'jobs': jobs,
         'count': len(uploaded),
     }
 
@@ -655,3 +744,21 @@ async def get_media_asset_url(
 async def get_media_asset_detail(asset_id: str, user: UserModel = Depends(get_verified_user)):
     row = _load_asset(str(user.id), asset_id)
     return MediaAssetItem(**row)
+
+
+@router.get('/upload-jobs/{job_id}', response_model=MediaUploadJobResponse)
+async def get_media_upload_job(job_id: str, user: UserModel = Depends(get_verified_user)):
+    job = MEDIA_UPLOAD_QUEUE.get(job_id, str(user.id))
+    if job is None:
+        raise HTTPException(status_code=404, detail='Media upload job not found')
+    payload = job.get('payload') or {}
+    asset_id = str(payload.get('asset_id') or '')
+    uploaded: list[MediaAssetItem] = []
+    failed: list[dict[str, str]] = []
+    if asset_id:
+        row = _load_asset(str(user.id), asset_id)
+        if row.get('status') == 'active':
+            uploaded.append(MediaAssetItem(**row))
+        elif row.get('tos_status') == 'failed':
+            failed.append({'filename': str(row.get('original_filename') or asset_id), 'error': str(row.get('tos_error') or 'Upload failed')})
+    return MediaUploadJobResponse(job_id=job_id, status=str(job['status']), uploaded=uploaded, failed=failed)
