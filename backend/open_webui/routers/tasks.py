@@ -114,7 +114,6 @@ class UnifiedTaskItem(BaseModel):
     thumbnail_url: Optional[str] = None
     video_preview_url: Optional[str] = None
     video_download_url: Optional[str] = None
-    external_video_file_id: Optional[str] = None
     prompt_text: Optional[str] = None
     generation_params: Optional[dict[str, Any]] = None
     prompt_resources: list[dict[str, str]] = Field(default_factory=list)
@@ -270,6 +269,7 @@ class TaskBridgeUpsertForm(BaseModel):
     thumbnail_url: Optional[str] = None
     video_preview_url: Optional[str] = None
     video_download_url: Optional[str] = None
+    external_video_file_id: Optional[str] = None
 
 
 class TaskBridgeUpsertResponse(BaseModel):

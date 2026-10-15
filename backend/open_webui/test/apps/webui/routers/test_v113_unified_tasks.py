@@ -979,6 +979,17 @@ def test_normalize_task_costs_extracts_runninghub_usage(tasks_router_module):
     }
 
 
+def test_task_bridge_form_accepts_external_video_file_id(tasks_router_module):
+    tasks_module, _material_stub = tasks_router_module
+
+    form = tasks_module.TaskBridgeUpsertForm(
+        task_id='task-external-video',
+        external_video_file_id='openwebui-file-1',
+    )
+
+    assert form.external_video_file_id == 'openwebui-file-1'
+
+
 def test_normalize_task_costs_supports_combined_h3_report(tasks_router_module):
     tasks_module, _material_stub = tasks_router_module
 
