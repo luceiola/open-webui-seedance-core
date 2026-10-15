@@ -241,6 +241,9 @@ class TaskBridgeUpsertForm(BaseModel):
     raw_last_response: Optional[dict[str, Any]] = None
     costs: Optional[dict[str, Any]] = None
     archive_required: Optional[bool] = None
+    thumbnail_url: Optional[str] = None
+    video_preview_url: Optional[str] = None
+    video_download_url: Optional[str] = None
 
 
 class TaskBridgeUpsertResponse(BaseModel):
@@ -1745,6 +1748,9 @@ async def upsert_task_bridge(form_data: TaskBridgeUpsertForm, user: UserModel = 
         raw_last_response=raw_last_response,
         costs=costs,
         archive_required=form_data.archive_required,
+        thumbnail_url=form_data.thumbnail_url,
+        video_preview_url=form_data.video_preview_url,
+        video_download_url=form_data.video_download_url,
     )
 
     # Ensure terminal/non-terminal merge policy wins even when provider payload carries stale status.

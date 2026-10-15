@@ -1096,6 +1096,22 @@ def _sync_task_serving_fields(user_id: str, task_record: dict[str, Any]) -> bool
 
         return changed
 
+    external_download_url = str(task_record.get('video_download_url') or '').strip()
+    external_preview_url = str(task_record.get('video_preview_url') or '').strip()
+    if task_record.get('archive_required') is False and (external_download_url or external_preview_url):
+        resolved_download_url = external_download_url or external_preview_url
+        resolved_preview_url = external_preview_url or external_download_url
+        if task_record.get('download_ready') is not True:
+            task_record['download_ready'] = True
+            changed = True
+        if task_record.get('video_download_url') != resolved_download_url:
+            task_record['video_download_url'] = resolved_download_url
+            changed = True
+        if task_record.get('video_preview_url') != resolved_preview_url:
+            task_record['video_preview_url'] = resolved_preview_url
+            changed = True
+        return changed
+
     video_path = _task_file_from_relative(user_id, task_record.get('archived_video_path'))
     thumb_path = _task_file_from_relative(user_id, task_record.get('thumbnail_path'))
 
@@ -1419,6 +1435,46 @@ def _is_runninghub_provider(provider: Optional[str]) -> bool:
     return str(provider or '').strip().lower().startswith('runninghub_')
 
 
+def _is_ai_utility_minimax_h3_provider(provider: Optional[str]) -> bool:
+    return str(provider or '').strip().lower() == 'ai_utility_minimax_h3'
+
+
+async def _query_ai_utility_minimax_h3_job(
+    task_record: dict[str, Any],
+    *,
+    timeout_seconds: int = 120,
+) -> dict[str, Any]:
+    job_id = str(task_record.get('provider_task_id') or task_record.get('task_id') or '').strip()
+    if not job_id:
+        raise ValueError('MiniMax H3 task is missing job_id')
+
+    generation_params = task_record.get('generation_params')
+    params = generation_params if isinstance(generation_params, dict) else {}
+    mode = str(params.get('mode') or '').strip().lower()
+    if mode not in {'ref2v', 'fl2v'}:
+        raw = task_record.get('raw_last_response') if isinstance(task_record.get('raw_last_response'), dict) else {}
+        mode = str(raw.get('mode') or '').strip().lower()
+    if mode not in {'ref2v', 'fl2v'}:
+        raise ValueError(f'MiniMax H3 task has invalid mode: {mode or "missing"}')
+
+    base_url = str(os.getenv('AI_UTILITY_PUBLIC_API_BASE_URL') or '').strip().rstrip('/')
+    api_key = str(os.getenv('AI_UTILITY_PUBLIC_API_KEY') or '').strip()
+    if not base_url or not api_key:
+        raise ValueError('AI Utility Public API credentials are not configured')
+
+    async with httpx.AsyncClient(timeout=timeout_seconds, trust_env=False) as client:
+        response = await client.get(
+            f'{base_url}/api/v1/minimax-h3/{mode}/jobs/{job_id}',
+            headers={'Authorization': f'Bearer {api_key}', 'Accept': 'application/json'},
+        )
+    if response.status_code >= 400:
+        raise RuntimeError(f'MiniMax H3 query failed HTTP {response.status_code}: {response.text}')
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise RuntimeError('MiniMax H3 query returned invalid payload')
+    return payload
+
+
 def _extract_runninghub_video_url(payload: Any) -> Optional[str]:
     query = payload.get('query') if isinstance(payload, dict) and isinstance(payload.get('query'), dict) else {}
     results = query.get('results') if isinstance(query.get('results'), list) else []
@@ -1589,6 +1645,20 @@ async def _refresh_task_record_from_ark(
             timeout_seconds=timeout_seconds,
         )
 
+    if _is_ai_utility_minimax_h3_provider(task_record.get('provider')):
+        raw = await _query_ai_utility_minimax_h3_job(task_record, timeout_seconds=timeout_seconds)
+        task_id = str(task_record.get('task_id') or raw.get('job_id') or '').strip()
+        if not task_id:
+            return task_record
+        return _touch_task_record(
+            user_id,
+            task_id,
+            status=_extract_task_status(raw),
+            artifact_kind=TASK_ARTIFACT_KIND_VIDEO,
+            costs=raw.get('costs') if isinstance(raw.get('costs'), dict) else None,
+            raw_last_response=raw,
+        )
+
     task_id = str(task_record.get('task_id') or '').strip()
     if not task_id:
         return task_record
@@ -1662,7 +1732,7 @@ async def reconcile_runninghub_tasks_once() -> int:
         (owner_user_id, item)
         for owner_user_id, item in rows
         if str(item.get('status') or '').strip().upper() in {'PENDING', 'RUNNING'}
-        and str(item.get('provider') or '').strip().lower() in {'ark', 'happyhorse', 'runninghub_seedance2', 'runninghub_seedance25', 'runninghub_wan3', 'runninghub_hailuo_h3', 'openai_image2', 'gpt_image2'}
+        and str(item.get('provider') or '').strip().lower() in {'ark', 'happyhorse', 'runninghub_seedance2', 'runninghub_seedance25', 'runninghub_wan3', 'runninghub_hailuo_h3', 'ai_utility_minimax_h3', 'openai_image2', 'gpt_image2'}
         and not _is_soft_deleted(item)
     ]
     if not candidates:
@@ -2093,6 +2163,9 @@ def _touch_task_record(
     raw_last_response: Optional[dict[str, Any]] = None,
     costs: Optional[dict[str, Any]] = None,
     archive_required: Optional[bool] = None,
+    thumbnail_url: Optional[str] = None,
+    video_preview_url: Optional[str] = None,
+    video_download_url: Optional[str] = None,
 ) -> dict[str, Any]:
     now = int(time.time())
     current = _load_task_record(user_id, task_id) or {
@@ -2201,6 +2274,12 @@ def _touch_task_record(
         current['costs'] = costs
     if archive_required is not None:
         current['archive_required'] = bool(archive_required)
+    if thumbnail_url is not None:
+        current['thumbnail_url'] = str(thumbnail_url).strip() or None
+    if video_preview_url is not None:
+        current['video_preview_url'] = str(video_preview_url).strip() or None
+    if video_download_url is not None:
+        current['video_download_url'] = str(video_download_url).strip() or None
 
     if _normalize_task_defaults(current, owner_user_id=str(user_id)):
         current['updated_at'] = now

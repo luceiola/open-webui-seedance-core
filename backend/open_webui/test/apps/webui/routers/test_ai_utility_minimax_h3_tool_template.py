@@ -260,6 +260,7 @@ def test_attach_video_returns_openwebui_download_markdown(monkeypatch):
     module = _load_module("test_ai_utility_h3_attach")
     tool = module.Tools()
     tool.valves.PUBLIC_API_KEY = "test-key"
+    bridge_payloads = []
 
     async def _fake_request(method, path, *, body=None, headers=None):
         _ = method, body, headers
@@ -295,12 +296,21 @@ def test_attach_video_returns_openwebui_download_markdown(monkeypatch):
     monkeypatch.setattr(tool, "_public_api_download", _fake_download)
     monkeypatch.setattr(tool, "_upload_video_to_openwebui", _fake_openwebui_upload)
 
+    async def _fake_bridge_upsert(*, requester, payload, __request__):
+        _ = requester, __request__
+        bridge_payloads.append(dict(payload))
+        return True
+
+    monkeypatch.setattr(module, "bridge_upsert", _fake_bridge_upsert)
+
     raw = asyncio.run(tool.attach_h3_video("fl2v", "h3-video-1"))
     payload = json.loads(raw)
 
     assert payload["ok"] is True
     assert payload["openwebui_file_id"] == "openwebui-video-1"
     assert payload["download_url_markdown"] == "[下载视频](/api/v1/files/openwebui-video-1/content)"
+    assert bridge_payloads[0]["video_preview_url"] == "/api/v1/files/openwebui-video-1/content"
+    assert bridge_payloads[0]["video_download_url"].endswith("?attachment=true")
 
 
 def test_prompt_and_skill_keep_rh_official_and_mode_routing_contract():

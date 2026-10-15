@@ -120,7 +120,9 @@
 			.toLowerCase() === 'image';
 
 	const canTaskDownload = (task: GenerationTaskItem): boolean =>
-		isImageTask(task) ? getTaskOutputImageUrls(task).length > 0 : Boolean(task.download_ready);
+		isImageTask(task)
+			? getTaskOutputImageUrls(task).length > 0
+			: Boolean(task.download_ready || task.video_download_url);
 
 	const taskRowKey = (task: GenerationTaskItem) =>
 		`${String(task.user_id || '')}::${String(task.task_id || '')}`;
@@ -395,8 +397,17 @@
 				blob = await downloadGenerationTaskImages(localStorage.token, task.task_id);
 				filename = `${task.task_id}_images.zip`;
 			} else {
-				if (!task.download_ready) {
+				if (!task.download_ready && !task.video_download_url) {
 					toast.error('任务归档尚未完成');
+					return;
+				}
+				if (!task.download_ready && task.video_download_url) {
+					const link = document.createElement('a');
+					link.href = toAssetUrl(task.video_download_url);
+					link.download = `${task.task_id}.mp4`;
+					document.body.appendChild(link);
+					link.click();
+					document.body.removeChild(link);
 					return;
 				}
 				blob = await downloadGenerationTask(localStorage.token, task.task_id);

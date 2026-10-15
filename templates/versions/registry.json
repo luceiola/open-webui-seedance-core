@@ -117,7 +117,7 @@
     "ai_utility_minimax_h3": {
       "tool": {
         "file": "templates/ai_utility_minimax_h3_tool.py",
-        "version": "0.1.0"
+        "version": "0.1.1"
       },
       "skill": {
         "file": "templates/skills/ai-utility-minimax-h3-execution-skill/SKILL.md",

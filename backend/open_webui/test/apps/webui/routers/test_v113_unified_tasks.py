@@ -1026,6 +1026,62 @@ def test_archive_disabled_task_is_marked_not_required(material_packages_router_m
     assert refreshed['archive_error'] is None
 
 
+def test_external_video_serving_fields_are_preserved(material_packages_router_module):
+    module = material_packages_router_module
+    record = {
+        'task_id': 'task-external-preview',
+        'artifact_kind': 'video',
+        'archive_required': False,
+        'archive_status': module.ARCHIVE_STATUS_NOT_REQUIRED,
+        'video_preview_url': '/api/v1/files/video-file/content',
+        'video_download_url': '/api/v1/files/video-file/content?attachment=true',
+    }
+
+    changed = module._sync_task_serving_fields('user-1', record)
+
+    assert changed is True
+    assert record['download_ready'] is True
+    assert record['video_preview_url'] == '/api/v1/files/video-file/content'
+    assert record['video_download_url'] == '/api/v1/files/video-file/content?attachment=true'
+
+
+def test_minimax_h3_refresh_uses_public_api_status_and_costs(material_packages_router_module, monkeypatch):
+    module = material_packages_router_module
+    captured = {}
+
+    async def _fake_query(task_record, *, timeout_seconds=120):
+        _ = task_record, timeout_seconds
+        return {
+            'job_id': 'h3-fl2v-test',
+            'status': 'completed',
+            'costs': {'currency': 'CNY', 'total': '0.5'},
+        }
+
+    def _fake_touch(user_id, task_id, **kwargs):
+        captured.update({'user_id': user_id, 'task_id': task_id, **kwargs})
+        return kwargs
+
+    monkeypatch.setattr(module, '_query_ai_utility_minimax_h3_job', _fake_query)
+    monkeypatch.setattr(module, '_touch_task_record', _fake_touch)
+
+    result = asyncio.run(
+        module._refresh_task_record_from_ark(
+            'user-1',
+            {
+                'task_id': 'h3-fl2v-test',
+                'provider': 'ai_utility_minimax_h3',
+                'provider_task_id': 'h3-fl2v-test',
+                'generation_params': {'mode': 'fl2v'},
+            },
+        )
+    )
+
+    assert captured['status'] == 'completed'
+    assert captured['costs']['total'] == '0.5'
+    assert captured['raw_last_response']['job_id'] == 'h3-fl2v-test'
+    assert result['status'] == 'completed'
+
+
 def test_unified_tasks_list_includes_image_artifact_fields(tasks_router_module):
     tasks_module, material_stub = tasks_router_module
 

@@ -196,7 +196,10 @@ const mapUnifiedTaskToLegacy = (item: UnifiedTaskApiItem): GenerationTaskItem =>
 		video_download_url:
 			artifactKind === 'image'
 				? null
-				: (item.video_download_url ?? `/api/v1/tasks/${encodeURIComponent(taskId)}/download`),
+				: (item.video_download_url ??
+					(Boolean(item.download_ready)
+						? `/api/v1/tasks/${encodeURIComponent(taskId)}/download`
+						: null)),
 		video_url: null,
 		error_code: item.error_code ?? null,
 		error_message: item.error_message ?? null,

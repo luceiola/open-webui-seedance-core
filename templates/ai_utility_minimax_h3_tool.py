@@ -1,7 +1,7 @@
 """
 title: AI Utility MiniMax H3 Tool
 author: local-dev
-version: 0.1.0
+version: 0.1.1
 required_open_webui_version: 0.8.0
 requirements: httpx>=0.28.1
 """
@@ -691,6 +691,7 @@ class Tools:
         __request__: Optional[Request],
         __metadata__: Optional[dict[str, Any]],
         submit: bool,
+        serving_fields: Optional[dict[str, Any]] = None,
     ) -> bool:
         job_id = str(payload.get("job_id") or "").strip()
         if not job_id:
@@ -706,6 +707,8 @@ class Tools:
             "costs": self._job_costs(payload),
             "archive_required": False,
         }
+        if serving_fields:
+            bridge_payload.update(serving_fields)
         if submit:
             bridge_payload.update(
                 {
@@ -1250,6 +1253,20 @@ class Tools:
                     request_id=openwebui_file.get("request_id"),
                 )
             file_url = openwebui_file["url"]
+            await self._bridge_job(
+                payload,
+                tool_name="attach_h3_video",
+                prompt_text="",
+                generation_params={},
+                __request__=__request__,
+                __metadata__={},
+                submit=False,
+                serving_fields={
+                    "thumbnail_url": None,
+                    "video_preview_url": file_url,
+                    "video_download_url": f"{file_url}?attachment=true",
+                },
+            )
             file_item = {
                 "type": "file",
                 "name": openwebui_file["name"],
