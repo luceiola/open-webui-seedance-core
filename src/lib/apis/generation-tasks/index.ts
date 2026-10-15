@@ -1,11 +1,35 @@
 import { WEBUI_API_BASE_URL } from '$lib/constants';
 
+export type GenerationTaskCostStage = {
+	provider?: string | null;
+	available?: boolean | null;
+	currency?: string | null;
+	consume_money?: string | null;
+	third_party_consume_money?: string | null;
+	total?: string | null;
+	task_cost_time?: string | null;
+	billing_seconds?: string | null;
+	reason?: string | null;
+	usage?: Record<string, unknown> | null;
+};
+
+export type GenerationTaskCosts = {
+	currency?: string | null;
+	status?: 'exact' | 'partial' | 'pending' | 'token_only' | 'unavailable' | string | null;
+	source?: string | null;
+	context_ir?: GenerationTaskCostStage | null;
+	video_generation?: GenerationTaskCostStage | null;
+	known_subtotal?: string | null;
+	total?: string | null;
+};
+
 export type GenerationTaskItem = {
 	task_id: string;
 	user_id?: string | null;
 	user_name?: string | null;
 	package_id?: string | null;
 	chat_id?: string | null;
+	provider?: string | null;
 	model?: string | null;
 	status?: string | null;
 	archive_status?: string | null;
@@ -35,6 +59,7 @@ export type GenerationTaskItem = {
 	prompt_text?: string | null;
 	generation_params?: Record<string, unknown> | null;
 	prompt_resources?: GenerationTaskPromptResourceItem[];
+	costs?: GenerationTaskCosts | null;
 };
 
 export type GenerationTaskPromptResourceItem = {
@@ -87,6 +112,7 @@ type UnifiedTaskApiItem = {
 	prompt_text?: string | null;
 	generation_params?: Record<string, unknown> | null;
 	prompt_resources?: Array<{ name?: string; url?: string }> | null;
+	costs?: GenerationTaskCosts | null;
 };
 
 type UnifiedTaskListResponse = {
@@ -145,6 +171,7 @@ const mapUnifiedTaskToLegacy = (item: UnifiedTaskApiItem): GenerationTaskItem =>
 		user_name: item.user_name ?? null,
 		package_id: null,
 		chat_id: item.chat_id ?? null,
+		provider: item.provider ?? null,
 		model: item.model ?? null,
 		status: item.status ?? null,
 		archive_status: item.archive_status ?? null,
@@ -186,7 +213,8 @@ const mapUnifiedTaskToLegacy = (item: UnifiedTaskApiItem): GenerationTaskItem =>
 						url: String(entry?.url || '').trim()
 					}))
 					.filter((entry) => entry.url.startsWith('http://') || entry.url.startsWith('https://'))
-			: []
+			: [],
+		costs: item.costs && typeof item.costs === 'object' ? item.costs : null
 	};
 };
 

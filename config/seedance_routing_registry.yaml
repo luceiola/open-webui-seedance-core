@@ -1,6 +1,6 @@
 {
   "version": "v1",
-  "updated_at": "2026-08-10T00:00:00+08:00",
+  "updated_at": "2026-10-15T00:00:00+08:00",
   "rules": [
     {
       "rule_id": "R-DSP-001",
@@ -185,6 +185,31 @@
           "size": "1024x1792",
           "quality": "standard",
           "model": "gpt-image-2"
+        }
+      }
+    },
+    {
+      "rule_id": "R-AIU-H3-001",
+      "status": "active",
+      "priority": 150,
+      "intent": "ai_utility_minimax_h3_generate",
+      "trigger": {
+        "mode": "explicit_or_detected",
+        "conditions": [
+          "contains_video_generation_intent",
+          "contains_ai_utility_h3_intent"
+        ]
+      },
+      "route": {
+        "skill": "ai-utility-minimax-h3",
+        "tool": "create_h3_ref2v_job",
+        "kb_scope": [],
+        "template_id": "",
+        "params": {
+          "context_ir": "rh-official",
+          "duration": 5,
+          "ratio": "9:16",
+          "instance_type": "plus"
         }
       }
     }

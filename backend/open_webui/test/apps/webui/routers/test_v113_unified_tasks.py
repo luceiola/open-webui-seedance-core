@@ -847,6 +847,12 @@ def test_unified_tasks_prompt_fields_are_backward_compatible(tasks_router_module
                 {'name': '01_FR1.png', 'url': 'https://example.com/01_FR1.png'},
                 {'name': 'bad', 'url': 'ftp://invalid'},
             ],
+            'raw_last_response': {
+                'usage': {
+                    'thirdPartyConsumeMoney': '12.5',
+                    'taskCostTime': '0',
+                }
+            },
         },
         'task-legacy': {
             'task_id': 'task-legacy',
@@ -869,6 +875,11 @@ def test_unified_tasks_prompt_fields_are_backward_compatible(tasks_router_module
     material_stub._should_refresh_task_status = lambda item, refresh_min_interval_seconds: False
     material_stub._is_soft_deleted = lambda item: False
     material_stub._generation_skill_from_model = lambda model: 'seedance'
+    material_stub._extract_error_info = lambda payload: {
+        'error_code': payload.get('error_code'),
+        'error_message': payload.get('error_message'),
+        'request_id': payload.get('request_id'),
+    }
 
     requester = StubUserModel(id='admin-1', role='admin')
     response = _run(
@@ -896,11 +907,123 @@ def test_unified_tasks_prompt_fields_are_backward_compatible(tasks_router_module
     assert response.items[0].prompt_text == '请参考 @01_FR1.png 生成'
     assert response.items[0].generation_params == {'model': 'doubao-seedance-1', 'duration': 5}
     assert response.items[0].prompt_resources == [{'name': '01_FR1.png', 'url': 'https://example.com/01_FR1.png'}]
+    assert response.items[0].costs['total'] == '12.5'
+    assert response.items[0].costs['video_generation']['total'] == '12.5'
 
     assert response.items[1].id == 'task-legacy'
     assert response.items[1].prompt_text is None
     assert response.items[1].generation_params is None
     assert response.items[1].prompt_resources == []
+
+
+def test_normalize_task_costs_extracts_runninghub_usage(tasks_router_module):
+    tasks_module, _material_stub = tasks_router_module
+
+    costs = tasks_module._normalize_task_costs(
+        {
+            'provider': 'runninghub_seedance25',
+            'raw_last_response': {
+                'final': {
+                    'status': 'SUCCESS',
+                    'usage': {
+                        'consumeMoney': None,
+                        'thirdPartyConsumeMoney': '9.529',
+                        'taskCostTime': '0',
+                        'billingSeconds': '5',
+                    },
+                }
+            },
+        }
+    )
+
+    assert costs == {
+        'currency': 'CNY',
+        'status': 'exact',
+        'source': 'runninghub_usage',
+        'context_ir': None,
+        'video_generation': {
+            'provider': 'runninghub_seedance25',
+            'available': True,
+            'currency': 'CNY',
+            'third_party_consume_money': '9.529',
+            'total': '9.529',
+            'task_cost_time': '0',
+            'billing_seconds': '5',
+        },
+        'known_subtotal': '9.529',
+        'total': '9.529',
+    }
+
+
+def test_normalize_task_costs_supports_combined_h3_report(tasks_router_module):
+    tasks_module, _material_stub = tasks_router_module
+
+    costs = tasks_module._normalize_task_costs(
+        {
+            'provider': 'ai_utility_h3',
+            'costs': {
+                'currency': 'CNY',
+                'context_ir': {
+                    'provider': 'rh-official',
+                    'available': True,
+                    'total': '1.00',
+                },
+                'video_generation': {
+                    'provider': 'runninghub',
+                    'available': True,
+                    'total': '1.50',
+                },
+            },
+        }
+    )
+
+    assert costs is not None
+    assert costs['status'] == 'exact'
+    assert costs['known_subtotal'] == '2.5'
+    assert costs['total'] == '2.5'
+    assert costs['context_ir']['total'] == '1'
+    assert costs['video_generation']['total'] == '1.5'
+
+
+def test_touch_task_record_persists_normalized_costs(material_packages_router_module):
+    module = material_packages_router_module
+    costs = {
+        'currency': 'CNY',
+        'status': 'exact',
+        'source': 'runninghub_usage',
+        'video_generation': {'provider': 'runninghub_seedance2', 'total': '16.8'},
+        'total': '16.8',
+    }
+
+    module._touch_task_record(
+        'user-1',
+        'task-cost-1',
+        provider='runninghub_seedance2',
+        costs=costs,
+    )
+
+    record = module._load_task_record('user-1', 'task-cost-1')
+    assert record is not None
+    assert record['costs'] == costs
+
+
+def test_archive_disabled_task_is_marked_not_required(material_packages_router_module):
+    module = material_packages_router_module
+
+    module._touch_task_record(
+        'user-1',
+        'task-external-video',
+        provider='ai_utility_minimax_h3',
+        status='SUCCEEDED',
+        artifact_kind='video',
+        archive_required=False,
+    )
+    record = module._load_task_record('user-1', 'task-external-video')
+    refreshed = asyncio.run(module._archive_task_record_if_needed('user-1', record))
+
+    assert refreshed['archive_required'] is False
+    assert refreshed['archive_status'] == module.ARCHIVE_STATUS_NOT_REQUIRED
+    assert refreshed['archive_error'] is None
 
 
 def test_unified_tasks_list_includes_image_artifact_fields(tasks_router_module):

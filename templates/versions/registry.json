@@ -1,6 +1,6 @@
 {
   "version": "v1.0.0",
-  "updated_at": "2026-08-10T00:00:00+08:00",
+  "updated_at": "2026-10-15T00:00:00+08:00",
   "components": {
     "seedance_material_package": {
       "tool": {
@@ -111,6 +111,20 @@
       },
       "system_prompt": {
         "file": "templates/prompts/volcengine_media_description_system_prompt.txt",
+        "version": "v1.0.0"
+      }
+    },
+    "ai_utility_minimax_h3": {
+      "tool": {
+        "file": "templates/ai_utility_minimax_h3_tool.py",
+        "version": "0.1.0"
+      },
+      "skill": {
+        "file": "templates/skills/ai-utility-minimax-h3-execution-skill/SKILL.md",
+        "version": "v1.0.0"
+      },
+      "system_prompt": {
+        "file": "templates/prompts/ai_utility_minimax_h3_system_prompt.txt",
         "version": "v1.0.0"
       }
     }

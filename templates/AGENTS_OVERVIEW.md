@@ -102,3 +102,18 @@
 - 关键入口函数：
   - `describe_image`
   - `describe_video`
+
+## 8) AI Utility MiniMax H3 Agent（205 Public API）
+
+- 用途：调用 205 Public API 的 MiniMax H3 Ref2V/FL2V，支持参考素材、显式首尾帧、任务查询、费用展示和成片回传。
+- 默认 Context-IR：`rh-official`；仅用户明确要求时使用 `none` 或 `doubao`。
+- 模式规则：纯文本和显式首尾帧走 FL2V；其他参考素材走 Ref2V。
+- System Prompt：`prompts/ai_utility_minimax_h3_system_prompt.txt`
+- Skill：`skills/ai-utility-minimax-h3-execution-skill/SKILL.md`
+- Tool：`ai_utility_minimax_h3_tool.py`
+- 关键入口函数：
+  - `create_h3_ref2v_job`
+  - `create_h3_fl2v_job`
+  - `get_h3_job`
+  - `wait_h3_job`
+  - `attach_h3_video`

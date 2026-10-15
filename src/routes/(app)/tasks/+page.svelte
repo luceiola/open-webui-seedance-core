@@ -54,6 +54,7 @@
 	let selectedTask: GenerationTaskItem | null = null;
 	let selectedTaskPromptSegments: PromptSegment[] = [];
 	let selectedTaskParamEntries: Array<[string, string]> = [];
+	let selectedTaskCostEntries: Array<[string, string]> = [];
 	let selectedTaskIsFailed = false;
 	let selectedTaskFailureReason = '';
 	let selectedTaskPreviewImageUrl = '';
@@ -506,6 +507,75 @@
 		return rows;
 	};
 
+	const formatCostAmount = (value: unknown, currency?: string | null): string => {
+		const amount = Number(value);
+		if (!Number.isFinite(amount)) return '';
+		const normalized = amount
+			.toFixed(2)
+			.replace(/\.00$/, '')
+			.replace(/(\.\d)0$/, '$1');
+		const currencyCode = String(currency || 'CNY').toUpperCase();
+		return currencyCode === 'CNY' ? `¥${normalized}` : `${currencyCode} ${normalized}`;
+	};
+
+	const getCostStageText = (
+		stage: NonNullable<GenerationTaskItem['costs']>['video_generation'],
+		currency?: string | null
+	): string => {
+		if (!stage) return '未结算';
+		const total = String(stage.total ?? '').trim();
+		if (total) return formatCostAmount(total, stage.currency || currency);
+		if (stage.reason === 'not_applicable') return formatCostAmount(0, stage.currency || currency);
+		if (stage.reason === 'provider_usage_has_no_cny_amount') return '金额未返回';
+		return stage.available === false ? '金额未返回' : '未结算';
+	};
+
+	const getTaskCostEntries = (task: GenerationTaskItem): Array<[string, string]> => {
+		const costs = task.costs;
+		const provider = String(task.provider || '')
+			.trim()
+			.toLowerCase();
+		const isRunningHubTask = provider.startsWith('runninghub_');
+		const isCostTrackedTask = isRunningHubTask || provider === 'ai_utility_minimax_h3';
+		if (!costs) {
+			if (!isCostTrackedTask) return [];
+			const status = String(task.status || '').toUpperCase();
+			const terminal = ['SUCCEEDED', 'FAILED', 'CANCELED'].includes(status);
+			return [['费用', terminal ? '供应商未返回费用' : '费用结算中']];
+		}
+
+		const rows: Array<[string, string]> = [];
+		const contextCost = costs.context_ir;
+		const videoCost = costs.video_generation;
+		const contextLabel = contextCost?.provider
+			? `Context-IR (${contextCost.provider})`
+			: 'Context-IR';
+
+		if (contextCost) {
+			rows.push([contextLabel, getCostStageText(contextCost, costs.currency)]);
+		}
+		if (videoCost) {
+			rows.push([
+				!contextCost && costs.source === 'runninghub_usage' ? 'RunningHub 扣费' : '视频生成',
+				getCostStageText(videoCost, costs.currency)
+			]);
+		}
+
+		const total = String(costs.total ?? '').trim();
+		const knownSubtotal = String(costs.known_subtotal ?? '').trim();
+		if (contextCost && total) {
+			rows.push(['合计', formatCostAmount(total, costs.currency)]);
+		} else if (contextCost && knownSubtotal) {
+			rows.push(['已知费用', formatCostAmount(knownSubtotal, costs.currency)]);
+		} else if (!contextCost && !videoCost && total) {
+			rows.push(['合计', formatCostAmount(total, costs.currency)]);
+		} else if (!contextCost && !videoCost && costs.status === 'pending') {
+			rows.push(['费用', '费用结算中']);
+		}
+
+		return rows;
+	};
+
 	const isFailedTask = (task: GenerationTaskItem): boolean => {
 		const status = String(task.status || '').toUpperCase();
 		const archiveStatus = String(task.archive_status || '').toUpperCase();
@@ -524,6 +594,7 @@
 
 	$: selectedTaskPromptSegments = selectedTask ? getPromptSegments(selectedTask) : [];
 	$: selectedTaskParamEntries = selectedTask ? getGenerationParamEntries(selectedTask) : [];
+	$: selectedTaskCostEntries = selectedTask ? getTaskCostEntries(selectedTask) : [];
 	$: selectedTaskIsFailed = selectedTask ? isFailedTask(selectedTask) : false;
 	$: selectedTaskFailureReason = selectedTask ? getFailureReason(selectedTask) : '';
 	$: selectedTaskImageUrls = selectedTask ? getTaskOutputImageUrls(selectedTask) : [];
@@ -855,6 +926,20 @@
 							/>
 						</button>
 					{/each}
+				</div>
+			{/if}
+
+			{#if selectedTaskCostEntries.length > 0}
+				<div class="task-detail-section">
+					<div class="task-detail-title">费用</div>
+					<div class="task-detail-body">
+						<div class="task-param-grid">
+							{#each selectedTaskCostEntries as row (`cost-${selectedTask.task_id}-${row[0]}`)}
+								<div class="task-param-key">{row[0]}</div>
+								<div class="task-param-value">{row[1]}</div>
+							{/each}
+						</div>
+					</div>
 				</div>
 			{/if}
 

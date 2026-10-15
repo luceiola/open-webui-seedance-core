@@ -3,6 +3,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from pydantic import BaseModel, Field
 from typing import Any, Optional
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 import ast
 import io
@@ -113,6 +114,7 @@ class UnifiedTaskItem(BaseModel):
     prompt_text: Optional[str] = None
     generation_params: Optional[dict[str, Any]] = None
     prompt_resources: list[dict[str, str]] = Field(default_factory=list)
+    costs: Optional[dict[str, Any]] = None
 
 
 class UnifiedTaskArtifactItem(BaseModel):
@@ -237,6 +239,8 @@ class TaskBridgeUpsertForm(BaseModel):
     prompt_resources: Optional[list[dict[str, Any]]] = None
     raw_submit_response: Optional[dict[str, Any]] = None
     raw_last_response: Optional[dict[str, Any]] = None
+    costs: Optional[dict[str, Any]] = None
+    archive_required: Optional[bool] = None
 
 
 class TaskBridgeUpsertResponse(BaseModel):
@@ -569,6 +573,234 @@ def _can_cancel_task(
     )
 
 
+def _cost_decimal_or_none(value: Any) -> Optional[Decimal]:
+    if value is None or isinstance(value, bool):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return Decimal(text)
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _cost_decimal_text(value: Optional[Decimal]) -> Optional[str]:
+    if value is None:
+        return None
+    text = format(value.normalize(), 'f')
+    if text == '-0':
+        return '0'
+    return text
+
+
+def _cost_text_or_none(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _normalize_cost_stage(
+    raw_stage: Any,
+    *,
+    default_provider: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    if not isinstance(raw_stage, dict):
+        return None
+
+    consume_money = _cost_decimal_or_none(
+        raw_stage.get('consume_money', raw_stage.get('consumeMoney'))
+    )
+    third_party_money = _cost_decimal_or_none(
+        raw_stage.get(
+            'third_party_consume_money',
+            raw_stage.get('thirdPartyConsumeMoney'),
+        )
+    )
+    total = _cost_decimal_or_none(raw_stage.get('total'))
+    if total is None and (consume_money is not None or third_party_money is not None):
+        total = (consume_money or Decimal('0')) + (third_party_money or Decimal('0'))
+
+    raw_available = raw_stage.get('available')
+    available = raw_available if isinstance(raw_available, bool) else total is not None
+    provider = _cost_text_or_none(raw_stage.get('provider')) or default_provider
+    currency = _cost_text_or_none(raw_stage.get('currency')) or 'CNY'
+    reason = _cost_text_or_none(raw_stage.get('reason'))
+    task_cost_time = _cost_text_or_none(
+        raw_stage.get('task_cost_time', raw_stage.get('taskCostTime'))
+    )
+    billing_seconds = _cost_text_or_none(
+        raw_stage.get('billing_seconds', raw_stage.get('billingSeconds'))
+    )
+    usage = raw_stage.get('usage') if isinstance(raw_stage.get('usage'), dict) else None
+
+    normalized = {
+        'provider': provider,
+        'available': available,
+        'currency': currency,
+        'consume_money': _cost_decimal_text(consume_money),
+        'third_party_consume_money': _cost_decimal_text(third_party_money),
+        'total': _cost_decimal_text(total),
+        'task_cost_time': task_cost_time,
+        'billing_seconds': billing_seconds,
+        'reason': reason,
+        'usage': usage,
+    }
+    return {key: value for key, value in normalized.items() if value is not None}
+
+
+def _normalize_cost_report(
+    raw_report: Any,
+    *,
+    fallback_provider: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    if not isinstance(raw_report, dict):
+        return None
+
+    context_ir = _normalize_cost_stage(
+        raw_report.get('context_ir'),
+        default_provider=fallback_provider,
+    )
+    video_generation = _normalize_cost_stage(
+        raw_report.get('video_generation'),
+        default_provider=fallback_provider,
+    )
+    if context_ir is None and video_generation is None:
+        return None
+
+    stage_totals: list[Decimal] = []
+    stages_complete = True
+    for stage in (context_ir, video_generation):
+        if not isinstance(stage, dict):
+            continue
+        stage_total = _cost_decimal_or_none(stage.get('total'))
+        if stage_total is None:
+            stages_complete = False
+            continue
+        stage_totals.append(stage_total)
+
+    known_subtotal = _cost_decimal_or_none(raw_report.get('known_subtotal'))
+    if known_subtotal is None and stage_totals:
+        known_subtotal = sum(stage_totals, Decimal('0'))
+
+    total = _cost_decimal_or_none(raw_report.get('total'))
+    if total is None and len(stage_totals) == 2 and stages_complete:
+        total = sum(stage_totals, Decimal('0'))
+
+    status = _cost_text_or_none(raw_report.get('status'))
+    if status is None:
+        if total is not None:
+            status = 'exact'
+        elif any(
+            isinstance(stage, dict)
+            and stage.get('reason') == 'provider_usage_has_no_cny_amount'
+            for stage in (context_ir, video_generation)
+        ):
+            status = 'token_only'
+        elif known_subtotal is not None:
+            status = 'partial'
+        else:
+            status = 'unavailable'
+
+    return {
+        'currency': _cost_text_or_none(raw_report.get('currency')) or 'CNY',
+        'status': status,
+        'source': _cost_text_or_none(raw_report.get('source')),
+        'context_ir': context_ir,
+        'video_generation': video_generation,
+        'known_subtotal': _cost_decimal_text(known_subtotal),
+        'total': _cost_decimal_text(total),
+    }
+
+
+def _find_cost_report(payload: Any) -> Optional[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return None
+
+    costs = payload.get('costs')
+    if isinstance(costs, dict):
+        return costs
+
+    for key in ('final', 'query', 'result', 'data', 'output', 'task', 'payload'):
+        nested = payload.get(key)
+        if not isinstance(nested, dict):
+            continue
+        found = _find_cost_report(nested)
+        if found is not None:
+            return found
+    return None
+
+
+def _find_runninghub_usage(payload: Any) -> Optional[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return None
+
+    usage = payload.get('usage')
+    if isinstance(usage, dict) and any(
+        key in usage
+        for key in (
+            'consumeMoney',
+            'thirdPartyConsumeMoney',
+            'taskCostTime',
+            'billingSeconds',
+            'consumeCoins',
+        )
+    ):
+        return usage
+
+    for key in ('final', 'query', 'result', 'data', 'output', 'task', 'payload'):
+        nested = payload.get(key)
+        if not isinstance(nested, dict):
+            continue
+        found = _find_runninghub_usage(nested)
+        if found is not None:
+            return found
+    return None
+
+
+def _normalize_task_costs(item: dict[str, Any]) -> Optional[dict[str, Any]]:
+    provider = str(item.get('provider') or '').strip().lower() or None
+    explicit_costs = item.get('costs')
+    if isinstance(explicit_costs, dict):
+        normalized = _normalize_cost_report(
+            explicit_costs,
+            fallback_provider=provider,
+        )
+        if normalized is not None:
+            return normalized
+
+    raw_payloads = (item.get('raw_last_response'), item.get('raw_submit_response'))
+    for raw_payload in raw_payloads:
+        cost_report = _find_cost_report(raw_payload)
+        normalized = _normalize_cost_report(
+            cost_report,
+            fallback_provider=provider,
+        )
+        if normalized is not None:
+            return normalized
+
+    for raw_payload in raw_payloads:
+        usage = _find_runninghub_usage(raw_payload)
+        stage = _normalize_cost_stage(
+            usage,
+            default_provider=provider or 'runninghub',
+        )
+        if stage is None:
+            continue
+        total = _cost_decimal_or_none(stage.get('total'))
+        return {
+            'currency': stage.get('currency') or 'CNY',
+            'status': 'exact' if total is not None else 'unavailable',
+            'source': 'runninghub_usage',
+            'context_ir': None,
+            'video_generation': stage,
+            'known_subtotal': _cost_decimal_text(total),
+            'total': _cost_decimal_text(total),
+        }
+    return None
+
+
 def _to_unified_task_item(
     *,
     owner_user_id: str,
@@ -636,6 +868,7 @@ def _to_unified_task_item(
     generation_params_value = item.get('generation_params')
     if not isinstance(generation_params_value, dict):
         generation_params_value = None
+    costs_value = _normalize_task_costs(item)
     prompt_resources_value: list[dict[str, str]] = []
     raw_prompt_resources = item.get('prompt_resources')
     if isinstance(raw_prompt_resources, list):
@@ -721,6 +954,7 @@ def _to_unified_task_item(
         prompt_text=prompt_text_value,
         generation_params=generation_params_value,
         prompt_resources=prompt_resources_value,
+        costs=costs_value,
     )
 
 
@@ -1463,6 +1697,14 @@ async def upsert_task_bridge(form_data: TaskBridgeUpsertForm, user: UserModel = 
     artifact_kind = _normalize_task_bridge_artifact_kind(form_data.artifact_kind)
     raw_submit_response = form_data.raw_submit_response if isinstance(form_data.raw_submit_response, dict) else None
     raw_last_response = form_data.raw_last_response if isinstance(form_data.raw_last_response, dict) else None
+    costs = _normalize_task_costs(
+        {
+            'provider': provider,
+            'costs': form_data.costs,
+            'raw_submit_response': raw_submit_response,
+            'raw_last_response': raw_last_response,
+        }
+    )
     request_id = form_data.request_id
     if not request_id:
         request_id = str((raw_last_response or {}).get('request_id') or (raw_submit_response or {}).get('request_id') or '').strip() or None
@@ -1501,6 +1743,8 @@ async def upsert_task_bridge(form_data: TaskBridgeUpsertForm, user: UserModel = 
         prompt_resources=form_data.prompt_resources,
         raw_submit_response=raw_submit_response,
         raw_last_response=raw_last_response,
+        costs=costs,
+        archive_required=form_data.archive_required,
     )
 
     # Ensure terminal/non-terminal merge policy wins even when provider payload carries stale status.
@@ -1513,7 +1757,11 @@ async def upsert_task_bridge(form_data: TaskBridgeUpsertForm, user: UserModel = 
 
     artifact_value = str(row.get('artifact_kind') or '').strip().lower()
     status_value = _normalize_unified_status(row.get('status'))
-    if artifact_value != 'image' and status_value in {'PENDING', 'RUNNING', 'SUCCEEDED'}:
+    if (
+        artifact_value != 'image'
+        and row.get('archive_required') is not False
+        and status_value in {'PENDING', 'RUNNING', 'SUCCEEDED'}
+    ):
         material_packages_router._spawn_task_archive_poller(owner_user_id, canonical_task_id)
 
     return TaskBridgeUpsertResponse(

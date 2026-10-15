@@ -1922,6 +1922,15 @@ async def _archive_task_record_if_needed(
             _save_task_record(owner_user_id, task_id, task_record)
         return task_record
 
+    if task_record.get('archive_required') is False:
+        if str(task_record.get('archive_status') or '').strip().upper() != ARCHIVE_STATUS_NOT_REQUIRED:
+            task_record['archive_status'] = ARCHIVE_STATUS_NOT_REQUIRED
+            task_record['archive_error'] = None
+            task_record['archive_updated_at'] = now
+            _sync_task_serving_fields(owner_user_id, task_record)
+            _save_task_record(owner_user_id, task_id, task_record)
+        return task_record
+
     if not _is_succeeded_task_status(status_value):
         if str(task_record.get('archive_status') or '').strip().upper() not in TASK_ARCHIVE_FINAL_STATUSES:
             if task_record.get('archive_status') != ARCHIVE_STATUS_NOT_REQUIRED:
@@ -2082,6 +2091,8 @@ def _touch_task_record(
     prompt_resources: Optional[list[dict[str, Any]]] = None,
     raw_submit_response: Optional[dict[str, Any]] = None,
     raw_last_response: Optional[dict[str, Any]] = None,
+    costs: Optional[dict[str, Any]] = None,
+    archive_required: Optional[bool] = None,
 ) -> dict[str, Any]:
     now = int(time.time())
     current = _load_task_record(user_id, task_id) or {
@@ -2185,6 +2196,11 @@ def _touch_task_record(
             current['error_message'] = err.get('error_message')
         if err.get('request_id'):
             current['request_id'] = err.get('request_id')
+
+    if isinstance(costs, dict) and costs:
+        current['costs'] = costs
+    if archive_required is not None:
+        current['archive_required'] = bool(archive_required)
 
     if _normalize_task_defaults(current, owner_user_id=str(user_id)):
         current['updated_at'] = now
