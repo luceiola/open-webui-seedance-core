@@ -1098,9 +1098,16 @@ def _sync_task_serving_fields(user_id: str, task_record: dict[str, Any]) -> bool
 
     external_download_url = str(task_record.get('video_download_url') or '').strip()
     external_preview_url = str(task_record.get('video_preview_url') or '').strip()
-    if task_record.get('archive_required') is False and (external_download_url or external_preview_url):
-        resolved_download_url = external_download_url or external_preview_url
-        resolved_preview_url = external_preview_url or external_download_url
+    external_video_file_id = str(task_record.get('external_video_file_id') or '').strip()
+    if task_record.get('archive_required') is False and (
+        external_video_file_id or external_download_url or external_preview_url
+    ):
+        if external_video_file_id:
+            resolved_download_url = f'/api/v1/tasks/{task_id}/download-media'
+            resolved_preview_url = f'/api/v1/tasks/{task_id}/preview-media'
+        else:
+            resolved_download_url = external_download_url or external_preview_url
+            resolved_preview_url = external_preview_url or external_download_url
         if task_record.get('download_ready') is not True:
             task_record['download_ready'] = True
             changed = True
@@ -2166,6 +2173,7 @@ def _touch_task_record(
     thumbnail_url: Optional[str] = None,
     video_preview_url: Optional[str] = None,
     video_download_url: Optional[str] = None,
+    external_video_file_id: Optional[str] = None,
 ) -> dict[str, Any]:
     now = int(time.time())
     current = _load_task_record(user_id, task_id) or {
@@ -2280,6 +2288,8 @@ def _touch_task_record(
         current['video_preview_url'] = str(video_preview_url).strip() or None
     if video_download_url is not None:
         current['video_download_url'] = str(video_download_url).strip() or None
+    if external_video_file_id is not None:
+        current['external_video_file_id'] = str(external_video_file_id).strip() or None
 
     if _normalize_task_defaults(current, owner_user_id=str(user_id)):
         current['updated_at'] = now

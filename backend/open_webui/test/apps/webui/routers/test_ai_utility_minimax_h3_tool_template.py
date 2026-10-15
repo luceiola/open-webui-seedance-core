@@ -311,6 +311,7 @@ def test_attach_video_returns_openwebui_download_markdown(monkeypatch):
     assert payload["download_url_markdown"] == "[下载视频](/api/v1/files/openwebui-video-1/content)"
     assert bridge_payloads[0]["video_preview_url"] == "/api/v1/files/openwebui-video-1/content"
     assert bridge_payloads[0]["video_download_url"].endswith("?attachment=true")
+    assert bridge_payloads[0]["external_video_file_id"] == "openwebui-video-1"
 
 
 def test_prompt_and_skill_keep_rh_official_and_mode_routing_contract():

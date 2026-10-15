@@ -56,6 +56,8 @@ def _build_tasks_router_fixture():
     open_webui_pkg.__path__ = []
     utils_pkg = types.ModuleType('open_webui.utils')
     utils_pkg.__path__ = []
+    storage_pkg = types.ModuleType('open_webui.storage')
+    storage_pkg.__path__ = []
     routers_pkg = types.ModuleType('open_webui.routers')
     routers_pkg.__path__ = []
     models_pkg = types.ModuleType('open_webui.models')
@@ -115,6 +117,25 @@ def _build_tasks_router_fixture():
             return {user_id: [] for user_id in user_ids}
 
     groups_module.Groups = _Groups
+
+    files_module = types.ModuleType('open_webui.models.files')
+
+    class _Files:
+        @staticmethod
+        async def get_file_by_id(file_id, db=None):
+            _ = file_id, db
+            return None
+
+    files_module.Files = _Files()
+
+    storage_provider_module = types.ModuleType('open_webui.storage.provider')
+
+    class _Storage:
+        @staticmethod
+        def get_file(file_path):
+            return file_path
+
+    storage_provider_module.Storage = _Storage()
 
     material_module = types.ModuleType('open_webui.routers.material_packages')
     material_module.ARCHIVE_STATUS_PENDING = 'PENDING'
@@ -226,6 +247,7 @@ def _build_tasks_router_fixture():
     stubs = {
         'open_webui': open_webui_pkg,
         'open_webui.utils': utils_pkg,
+        'open_webui.storage': storage_pkg,
         'open_webui.utils.chat': chat_module,
         'open_webui.utils.task': task_utils_module,
         'open_webui.utils.auth': auth_module,
@@ -233,9 +255,11 @@ def _build_tasks_router_fixture():
         'open_webui.models': models_pkg,
         'open_webui.models.users': users_module,
         'open_webui.models.groups': groups_module,
+        'open_webui.models.files': files_module,
         'open_webui.routers': routers_pkg,
         'open_webui.routers.material_packages': material_module,
         'open_webui.routers.pipelines': pipelines_module,
+        'open_webui.storage.provider': storage_provider_module,
         'open_webui.config': config_module,
     }
 
@@ -1033,6 +1057,7 @@ def test_external_video_serving_fields_are_preserved(material_packages_router_mo
         'artifact_kind': 'video',
         'archive_required': False,
         'archive_status': module.ARCHIVE_STATUS_NOT_REQUIRED,
+        'external_video_file_id': 'video-file',
         'video_preview_url': '/api/v1/files/video-file/content',
         'video_download_url': '/api/v1/files/video-file/content?attachment=true',
     }
@@ -1041,8 +1066,8 @@ def test_external_video_serving_fields_are_preserved(material_packages_router_mo
 
     assert changed is True
     assert record['download_ready'] is True
-    assert record['video_preview_url'] == '/api/v1/files/video-file/content'
-    assert record['video_download_url'] == '/api/v1/files/video-file/content?attachment=true'
+    assert record['video_preview_url'] == '/api/v1/tasks/task-external-preview/preview-media'
+    assert record['video_download_url'] == '/api/v1/tasks/task-external-preview/download-media'
 
 
 def test_minimax_h3_refresh_uses_public_api_status_and_costs(material_packages_router_module, monkeypatch):
@@ -1169,6 +1194,41 @@ def test_unified_task_preview_returns_image_fields(tasks_router_module):
     assert response.image_urls == ['https://example.com/preview.png']
     assert response.primary_image_url == 'https://example.com/preview.png'
     assert response.thumbnail_url == 'https://example.com/preview.png'
+
+
+def test_unified_task_preview_media_resolves_external_file(tasks_router_module, tmp_path):
+    tasks_module, material_stub = tasks_router_module
+    video_path = tmp_path / 'video.mp4'
+    video_path.write_bytes(b'video-data')
+
+    async def _load_task_for_read(task_id, **kwargs):
+        _ = kwargs
+        return 'user-1', {
+            'task_id': task_id,
+            'external_video_file_id': 'openwebui-file-1',
+        }
+
+    class _ExternalFile:
+        path = str(video_path)
+
+    async def _get_file_by_id(file_id, db=None):
+        _ = db
+        assert file_id == 'openwebui-file-1'
+        return _ExternalFile()
+
+    material_stub._load_task_for_read = _load_task_for_read
+    tasks_module.Files.get_file_by_id = _get_file_by_id
+    tasks_module.Storage.get_file = lambda path: path
+
+    response = _run(
+        tasks_module.get_unified_task_preview_media(
+            task_id='task-external-preview',
+            user=StubUserModel(id='user-1', role='user'),
+        )
+    )
+
+    assert Path(response.path) == video_path
+    assert response.media_type == 'video/mp4'
 
 
 def test_unified_task_preview_uses_local_image_output_when_artifacts_are_mounted(tasks_router_module, tmp_path):

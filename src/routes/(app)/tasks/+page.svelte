@@ -6,7 +6,6 @@
 
 	import {
 		deleteGenerationTask,
-		downloadGenerationTask,
 		downloadGenerationTaskImages,
 		getGenerationTaskPreview,
 		listGenerationTaskGroups,
@@ -397,21 +396,17 @@
 				blob = await downloadGenerationTaskImages(localStorage.token, task.task_id);
 				filename = `${task.task_id}_images.zip`;
 			} else {
-				if (!task.download_ready && !task.video_download_url) {
+				if (!task.video_download_url) {
 					toast.error('任务归档尚未完成');
 					return;
 				}
-				if (!task.download_ready && task.video_download_url) {
-					const link = document.createElement('a');
-					link.href = toAssetUrl(task.video_download_url);
-					link.download = `${task.task_id}.mp4`;
-					document.body.appendChild(link);
-					link.click();
-					document.body.removeChild(link);
-					return;
-				}
-				blob = await downloadGenerationTask(localStorage.token, task.task_id);
-				filename = `${task.task_id}.mp4`;
+				const link = document.createElement('a');
+				link.href = toAssetUrl(task.video_download_url);
+				link.download = `${task.task_id}.mp4`;
+				document.body.appendChild(link);
+				link.click();
+				document.body.removeChild(link);
+				return;
 			}
 
 			const objectUrl = URL.createObjectURL(blob);

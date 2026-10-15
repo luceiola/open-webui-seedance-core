@@ -1,7 +1,7 @@
 """
 title: AI Utility MiniMax H3 Tool
 author: local-dev
-version: 0.1.1
+version: 0.1.2
 required_open_webui_version: 0.8.0
 requirements: httpx>=0.28.1
 """
@@ -1265,6 +1265,7 @@ class Tools:
                     "thumbnail_url": None,
                     "video_preview_url": file_url,
                     "video_download_url": f"{file_url}?attachment=true",
+                    "external_video_file_id": openwebui_file["id"],
                 },
             )
             file_item = {

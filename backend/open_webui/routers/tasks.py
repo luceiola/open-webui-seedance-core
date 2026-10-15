@@ -6,6 +6,7 @@ from typing import Any, Optional
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 import ast
+import asyncio
 import io
 import mimetypes
 import logging
@@ -28,7 +29,9 @@ from open_webui.utils.auth import get_admin_user, get_verified_user
 from open_webui.constants import ERROR_MESSAGES, TASKS
 from open_webui.models.users import UserModel
 from open_webui.models.groups import Groups
+from open_webui.models.files import Files
 from open_webui.routers import material_packages as material_packages_router
+from open_webui.storage.provider import Storage
 
 from open_webui.routers.pipelines import process_pipeline_inlet_filter
 
@@ -111,6 +114,7 @@ class UnifiedTaskItem(BaseModel):
     thumbnail_url: Optional[str] = None
     video_preview_url: Optional[str] = None
     video_download_url: Optional[str] = None
+    external_video_file_id: Optional[str] = None
     prompt_text: Optional[str] = None
     generation_params: Optional[dict[str, Any]] = None
     prompt_resources: list[dict[str, str]] = Field(default_factory=list)
@@ -165,6 +169,28 @@ async def _load_task_for_request(
         refresh_min_interval_seconds=refresh_min_interval_seconds,
     )
     return owner_user_id, item
+
+
+async def _resolve_external_task_video_path(item: dict[str, Any]) -> Optional[Path]:
+    file_id = str(item.get('external_video_file_id') or '').strip()
+    if not file_id:
+        for key in ('video_preview_url', 'video_download_url'):
+            value = str(item.get(key) or '').strip()
+            match = re.match(r'^/api/v1/files/([^/]+)/content(?:\?.*)?$', value)
+            if match:
+                file_id = match.group(1)
+                break
+    if not file_id:
+        return None
+    file = await Files.get_file_by_id(file_id)
+    if not file or not file.path:
+        return None
+    try:
+        file_path = await asyncio.to_thread(Storage.get_file, file.path)
+    except Exception:
+        return None
+    path = Path(file_path)
+    return path if path.is_file() else None
 
 
 class UnifiedTaskUserItem(BaseModel):
@@ -1751,6 +1777,7 @@ async def upsert_task_bridge(form_data: TaskBridgeUpsertForm, user: UserModel = 
         thumbnail_url=form_data.thumbnail_url,
         video_preview_url=form_data.video_preview_url,
         video_download_url=form_data.video_download_url,
+        external_video_file_id=form_data.external_video_file_id,
     )
 
     # Ensure terminal/non-terminal merge policy wins even when provider payload carries stale status.
@@ -2070,6 +2097,36 @@ async def get_unified_task_preview(
         primary_image_url=task_row.primary_image_url,
         thumbnail_url=task_row.thumbnail_url,
         video_preview_url=task_row.video_preview_url,
+    )
+
+
+@router.get('/{task_id}/preview-media')
+async def get_unified_task_preview_media(
+    task_id: str,
+    user: UserModel = Depends(get_verified_user),
+):
+    _, item = await _load_task_for_request(task_id, user, refresh_status=False)
+    video_path = await _resolve_external_task_video_path(item)
+    if video_path is None:
+        raise HTTPException(status_code=404, detail='Video not found')
+    media_type = mimetypes.guess_type(video_path.name)[0] or 'video/mp4'
+    return FileResponse(path=video_path, media_type=media_type)
+
+
+@router.get('/{task_id}/download-media')
+async def download_unified_task_external_media(
+    task_id: str,
+    user: UserModel = Depends(get_verified_user),
+):
+    _, item = await _load_task_for_request(task_id, user, refresh_status=False)
+    video_path = await _resolve_external_task_video_path(item)
+    if video_path is None:
+        raise HTTPException(status_code=404, detail='Video not found')
+    media_type = mimetypes.guess_type(video_path.name)[0] or 'video/mp4'
+    return FileResponse(
+        path=video_path,
+        media_type=media_type,
+        filename=video_path.name,
     )
 
 
